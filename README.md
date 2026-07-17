@@ -31,6 +31,15 @@ Built with [OpenTUI](https://opentui.com/) (`@opentui/react`) on Bun.
 Each step chooses its own agent, so a single flow can mix agents (e.g. implement with
 Claude Code, review with a second agent).
 
+Agents run inside a real PTY (via `bun-pty`), so they see a proper terminal —
+colors, progress rendering, TTY-gated behavior all work. The run screen renders
+the live session through Ghostty's terminal emulation
+([`ghostty-opentui`](https://www.npmjs.com/package/ghostty-opentui), built on
+libghostty-vt), and the validator receives clean text extracted from the
+terminal state rather than raw escape sequences. See
+`docs/ghostty-terminal-sessions.md` for the design and the planned follow-ups
+(persistent per-agent sessions, attach/takeover).
+
 ## Install & run
 
 Requires [Bun](https://bun.sh) and at least one coding agent CLI on your PATH.
@@ -78,6 +87,7 @@ src/types.ts         shared contract (Flow, FlowStep, RunEvent, ...)
 src/core/
   storage.ts         JSON persistence in $FLOWS_HOME/flows
   agents.ts          agent registry + command builders
+  session.ts         PTY-backed agent sessions (bun-pty)
   template.ts        {{...}} interpolation
   validator.ts       Anthropic API structured-output validation
   engine.ts          sequential run loop, streaming, retries, cancellation

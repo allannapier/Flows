@@ -1,6 +1,6 @@
 # Exploration: Ghostty-backed terminal sessions per agent
 
-**Status: explored & validated, not yet implemented.** This doc records what the
+**Status: Phase 1 implemented (PTY execution + terminal pane); Phases 2-3 planned.** This doc records what the
 Ghostty library ecosystem offers, what was proven in a spike, and a proposed
 design for giving each agent step a real terminal session inside Flows.
 
