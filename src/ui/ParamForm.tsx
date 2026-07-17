@@ -108,7 +108,6 @@ export function ParamForm({
         title={param ? "Edit parameter" : "New parameter"}
         margin={1}
         padding={1}
-        gap={1}
       >
         <box flexDirection="column">
           <text fg={cursor === 0 ? colors.accent : colors.text}>Name</text>

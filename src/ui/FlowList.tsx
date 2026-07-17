@@ -73,6 +73,7 @@ export function FlowList({
         ) : (
           <select
             focused
+            flexGrow={1}
             options={options}
             selectedIndex={selectedIndex}
             onChange={(index) => setSelectedIndex(index)}

@@ -175,7 +175,6 @@ export function StepEditor({
         title={step ? "Edit step" : "New step"}
         margin={1}
         padding={1}
-        gap={1}
       >
         <box flexDirection="column">
           <text fg={rows[safeCursor] === "name" ? colors.accent : colors.text}>Name</text>
@@ -191,6 +190,7 @@ export function StepEditor({
           {editingAgent ? (
             <select
               focused
+              height={AGENTS.length * 2}
               options={agentOptions}
               selectedIndex={Math.max(0, AGENTS.findIndex((a) => a.id === draft.agent))}
               onSelect={(_i, option) => {
