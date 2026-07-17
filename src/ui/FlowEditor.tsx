@@ -254,6 +254,9 @@ export function FlowEditor({
       <box paddingLeft={1} paddingTop={1}>
         <text fg={colors.accent}>{flowId ? "Edit flow" : "New flow"}</text>
       </box>
+      {/* No gap/marginBottom between the column children here: OpenTUI 0.4.5
+          draws the first text child of nested boxes one row down (overlapping
+          its sibling) when this column layout uses inter-sibling spacing. */}
       <box flexGrow={1} flexDirection="column" border borderStyle="rounded" borderColor={colors.dim} margin={1} padding={1}>
         <box flexDirection="column">
           <text fg={isRow("name") ? colors.accent : colors.text}>Name</text>

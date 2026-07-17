@@ -103,6 +103,13 @@ async function testEngine(): Promise<void> {
       stepComplete.output.includes("hello world"),
       `expected step output to include "hello world", got: ${JSON.stringify(stepComplete.output)}`,
     );
+    // The engine now runs the step in a PTY and cleans the output with
+    // ptyToText before emitting step-complete; it should contain no raw
+    // ANSI escape sequences.
+    assert.ok(
+      !stepComplete.output.includes("\x1b["),
+      `expected step output to be free of ANSI escapes, got: ${JSON.stringify(stepComplete.output)}`,
+    );
   }
 
   console.log("engine: OK");

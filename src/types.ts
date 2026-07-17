@@ -79,11 +79,19 @@ export interface RunHandle {
   done: Promise<void>;
   /** Abort the run (kills the current agent process). */
   cancel(): void;
+  /** Resize the PTY of the currently running step (no-op when idle). */
+  resize(cols: number, rows: number): void;
+}
+
+/** Optional terminal size hints for runFlow; defaults to 120x30. */
+export interface RunOptions {
+  cols?: number;
+  rows?: number;
 }
 
 // Implemented in src/core/engine.ts:
 //   export function runFlow(flow: Flow, paramValues: Record<string, string>,
-//                           onEvent: (e: RunEvent) => void): RunHandle
+//                           onEvent: (e: RunEvent) => void, options?: RunOptions): RunHandle
 //
 // Implemented in src/core/storage.ts:
 //   export function listFlows(): Flow[]

@@ -1,19 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useKeyboard } from "@opentui/react";
+import { extend, useKeyboard, useTerminalDimensions } from "@opentui/react";
+import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
 import { getFlow } from "../core/storage";
 import { runFlow } from "../core/engine";
 import type { Flow, RunEvent, RunHandle } from "../types";
 import { colors, Hint } from "./theme";
 
+extend({ "ghostty-terminal": GhosttyTerminalRenderable });
+
+// Global augmentation interface for extended components — see
+// node_modules/@opentui/react/src/types/components.d.ts / jsx-namespace.d.ts.
+declare module "@opentui/react" {
+  interface OpenTUIComponents {
+    "ghostty-terminal": typeof GhosttyTerminalRenderable;
+  }
+}
+
 type StepStatus = "pending" | "running" | "validating" | "retrying" | "done" | "failed";
 
-interface LogLine {
-  id: number;
+interface StatusMessage {
   text: string;
   color: string;
 }
-
-let logId = 0;
 
 const STATUS_SYMBOL: Record<StepStatus, string> = {
   pending: "○",
@@ -33,6 +41,20 @@ const STATUS_COLOR: Record<StepStatus, string> = {
   failed: colors.error,
 };
 
+const MIN_TERM_COLS = 40;
+const MIN_TERM_ROWS = 10;
+const STEPS_PANE_WIDTH = 36;
+// Steps pane width + row's outer margin (1+1) + pane gap (1) + terminal
+// pane's own left/right border (1+1).
+const HORIZONTAL_CHROME = STEPS_PANE_WIDTH + 2 + 1 + 2;
+// Header line + row's outer margin (1+1) + terminal border (1+1) + status
+// strip + hint bar.
+const VERTICAL_CHROME = 8;
+
+function stepSeparator(stepIndex: number, stepName: string): string {
+  return `\r\n\x1b[2m── step ${stepIndex + 1}: ${stepName} ──\x1b[0m\r\n`;
+}
+
 export function RunScreen({
   flowId,
   params,
@@ -43,26 +65,23 @@ export function RunScreen({
   onExit: () => void;
 }) {
   const flow: Flow | undefined = useMemo(() => getFlow(flowId), [flowId]);
+  const { width, height } = useTerminalDimensions();
+
+  const termCols = Math.max(MIN_TERM_COLS, width - HORIZONTAL_CHROME);
+  const termRows = Math.max(MIN_TERM_ROWS, height - VERTICAL_CHROME);
 
   const [statuses, setStatuses] = useState<StepStatus[]>(() => (flow ? flow.steps.map(() => "pending") : []));
   const [attempts, setAttempts] = useState<number[]>(() => (flow ? flow.steps.map(() => 1) : []));
-  const [logLines, setLogLines] = useState<LogLine[]>([]);
+  const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null);
   const [flowStatus, setFlowStatus] = useState<"running" | "complete" | "failed">("running");
   const [finalError, setFinalError] = useState<string | null>(null);
 
   const handleRef = useRef<RunHandle | null>(null);
-  const partialLinesRef = useRef<Record<number, string>>({});
-  const runIdRef = useRef(0);
-
-  function pushLine(text: string, color: string = colors.text) {
-    logId += 1;
-    setLogLines((prev) => [...prev, { id: logId, text, color }]);
-  }
+  const termRef = useRef<GhosttyTerminalRenderable | null>(null);
 
   function handleEvent(e: RunEvent) {
     switch (e.type) {
       case "flow-start":
-        pushLine(`Starting "${e.flowName}" — ${e.totalSteps} step${e.totalSteps === 1 ? "" : "s"}`, colors.accent);
         break;
       case "step-start":
         setStatuses((prev) => {
@@ -75,41 +94,28 @@ export function RunScreen({
           next[e.stepIndex] = e.attempt;
           return next;
         });
-        pushLine(
-          `▶ Step ${e.stepIndex + 1}: ${e.stepName} (${e.agent})${e.attempt > 1 ? ` — attempt ${e.attempt}` : ""}`,
-          colors.accent,
-        );
-        break;
-      case "agent-output": {
-        const buf = (partialLinesRef.current[e.stepIndex] ?? "") + e.chunk;
-        const parts = buf.split("\n");
-        partialLinesRef.current[e.stepIndex] = parts.pop() ?? "";
-        for (const line of parts) {
-          if (line.length > 0) pushLine(line, colors.textMuted);
+        if (e.attempt === 1) {
+          termRef.current?.feed(stepSeparator(e.stepIndex, e.stepName));
         }
         break;
-      }
-      case "step-output-complete": {
-        const remainder = partialLinesRef.current[e.stepIndex];
-        if (remainder) {
-          pushLine(remainder, colors.textMuted);
-          partialLinesRef.current[e.stepIndex] = "";
-        }
+      case "agent-output":
+        termRef.current?.feed(e.chunk);
         break;
-      }
+      case "step-output-complete":
+        break;
       case "validation-start":
         setStatuses((prev) => {
           const next = [...prev];
           next[e.stepIndex] = "validating";
           return next;
         });
-        pushLine("  validating output...", colors.dim);
+        setStatusMessage({ text: "validating output...", color: colors.dim });
         break;
       case "validation-result":
         if (e.verdict.passed) {
-          pushLine("  ✓ validation passed", colors.success);
+          setStatusMessage({ text: "validation passed", color: colors.success });
         } else {
-          pushLine(`  ✗ validation failed: ${e.verdict.feedback}`, colors.error);
+          setStatusMessage({ text: `validation failed: ${e.verdict.feedback}`, color: colors.error });
         }
         break;
       case "step-retry":
@@ -118,7 +124,7 @@ export function RunScreen({
           next[e.stepIndex] = "retrying";
           return next;
         });
-        pushLine(`  retrying (attempt ${e.attempt}): ${e.feedback}`, colors.warning);
+        setStatusMessage({ text: `retrying (attempt ${e.attempt}): ${e.feedback}`, color: colors.warning });
         break;
       case "step-complete":
         setStatuses((prev) => {
@@ -126,7 +132,6 @@ export function RunScreen({
           next[e.stepIndex] = "done";
           return next;
         });
-        pushLine(`✓ step ${e.stepIndex + 1} complete`, colors.success);
         break;
       case "step-failed":
         setStatuses((prev) => {
@@ -134,30 +139,28 @@ export function RunScreen({
           next[e.stepIndex] = "failed";
           return next;
         });
-        pushLine(`✗ step ${e.stepIndex + 1} failed: ${e.error}`, colors.error);
+        setStatusMessage({ text: `step ${e.stepIndex + 1} failed: ${e.error}`, color: colors.error });
         break;
       case "flow-complete":
         setFlowStatus("complete");
-        pushLine("Flow complete.", colors.success);
         break;
       case "flow-failed":
         setFlowStatus("failed");
         setFinalError(e.error);
-        pushLine(`Flow failed: ${e.error}`, colors.error);
+        setStatusMessage({ text: `flow failed: ${e.error}`, color: colors.error });
         break;
     }
   }
 
   function start() {
     if (!flow) return;
-    runIdRef.current += 1;
-    partialLinesRef.current = {};
+    termRef.current?.reset();
     setStatuses(flow.steps.map(() => "pending"));
     setAttempts(flow.steps.map(() => 1));
-    setLogLines([]);
+    setStatusMessage(null);
     setFlowStatus("running");
     setFinalError(null);
-    handleRef.current = runFlow(flow, params, handleEvent);
+    handleRef.current = runFlow(flow, params, handleEvent, { cols: termCols, rows: termRows });
   }
 
   useEffect(() => {
@@ -167,6 +170,10 @@ export function RunScreen({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flow]);
+
+  useEffect(() => {
+    handleRef.current?.resize(termCols, termRows);
+  }, [termCols, termRows]);
 
   useKeyboard((key) => {
     if (key.name === "escape") {
@@ -208,7 +215,7 @@ export function RunScreen({
           borderColor={colors.dim}
           title="Steps"
           padding={1}
-          width={36}
+          width={STEPS_PANE_WIDTH}
         >
           {flow.steps.map((step, i) => {
             const status = statuses[i] ?? "pending";
@@ -221,23 +228,15 @@ export function RunScreen({
             );
           })}
         </box>
-        <scrollbox
-          flexGrow={1}
-          border
-          borderStyle="rounded"
-          borderColor={colors.dim}
-          title="Output"
-          padding={1}
-          stickyScroll
-          stickyStart="bottom"
-        >
-          {logLines.map((l) => (
-            <text key={l.id} fg={l.color}>
-              {l.text}
-            </text>
-          ))}
-        </scrollbox>
+        <box flexDirection="column" flexGrow={1} border borderStyle="rounded" borderColor={colors.dim} title="Terminal">
+          <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} flexGrow={1} />
+        </box>
       </box>
+      {statusMessage && (
+        <box paddingLeft={1}>
+          <text fg={statusMessage.color}>{statusMessage.text}</text>
+        </box>
+      )}
       {flowStatus === "complete" && (
         <box paddingLeft={1}>
           <text fg={colors.success}>✓ Flow complete</text>

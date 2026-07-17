@@ -1,9 +1,12 @@
 // Flow execution engine: runs a Flow's steps in order, spawning the
-// configured agent for each step, optionally validating output with the
-// built-in LLM validator, and retrying failed steps up to maxRetries times.
+// configured agent for each step inside a real PTY (via AgentSession),
+// optionally validating output with the built-in LLM validator, and
+// retrying failed steps up to maxRetries times.
 
-import type { Flow, RunEvent, RunHandle } from "../types";
+import { ptyToText } from "ghostty-opentui";
+import type { Flow, RunEvent, RunHandle, RunOptions } from "../types";
 import { buildAgentCommand } from "./agents";
+import { AgentSession } from "./session";
 import { renderTemplate } from "./template";
 import { validateOutput } from "./validator";
 
@@ -13,15 +16,38 @@ const RETRY_CONTEXT_TEMPLATE = (feedback: string) =>
   `Validator feedback: ${feedback}\n` +
   `Please address the feedback and try again.`;
 
+const DEFAULT_COLS = 120;
+const DEFAULT_ROWS = 30;
+
+// Matches CSI sequences (ESC [ ... final byte) used as a fallback cleaner
+// when ptyToText itself throws on malformed input.
+const ANSI_CSI_RE = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
+// Matches OSC sequences (ESC ] ... BEL or ST).
+const ANSI_OSC_RE = /\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g;
+
+function stripAnsiFallback(s: string): string {
+  return s.replace(ANSI_OSC_RE, "").replace(ANSI_CSI_RE, "");
+}
+
+function cleanOutput(raw: string, cols: number, rows: number): string {
+  try {
+    return ptyToText(raw, { cols, rows });
+  } catch {
+    return stripAnsiFallback(raw);
+  }
+}
+
 export function runFlow(
   flow: Flow,
   paramValues: Record<string, string>,
   onEvent: (e: RunEvent) => void,
+  options?: RunOptions,
 ): RunHandle {
   let cancelled = false;
   let cancelledEmitted = false;
-  // Bun.spawn's return type (Subprocess) isn't imported by name; infer it.
-  let currentProc: ReturnType<typeof Bun.spawn> | null = null;
+  let currentSession: AgentSession | null = null;
+  let liveCols = options?.cols ?? DEFAULT_COLS;
+  let liveRows = options?.rows ?? DEFAULT_ROWS;
 
   function emitCancelledIfNeeded(): boolean {
     if (cancelled && !cancelledEmitted) {
@@ -107,57 +133,21 @@ export function runFlow(
           return;
         }
 
-        const proc = Bun.spawn({
+        const attemptCols = liveCols;
+        const attemptRows = liveRows;
+
+        const session = new AgentSession({
           cmd,
-          env: { ...process.env, ...extraEnv },
+          env: extraEnv,
           cwd: step.workingDir || process.cwd(),
-          stdout: "pipe",
-          stderr: "pipe",
-          stdin: "ignore",
+          cols: attemptCols,
+          rows: attemptRows,
+          onData: (chunk) => onEvent({ type: "agent-output", stepIndex, chunk }),
         });
-        currentProc = proc;
+        currentSession = session;
 
-        let stdoutAccum = "";
-        const pumpStdout = async (): Promise<void> => {
-          const stream = proc.stdout as ReadableStream<Uint8Array> | number | undefined;
-          if (!stream || typeof stream === "number") return;
-          const decoder = new TextDecoder();
-          const reader = stream.getReader();
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              const chunk = decoder.decode(value, { stream: true });
-              if (chunk.length === 0) continue;
-              stdoutAccum += chunk;
-              onEvent({ type: "agent-output", stepIndex, chunk });
-            }
-          } finally {
-            reader.releaseLock();
-          }
-        };
-
-        const pumpStderr = async (): Promise<void> => {
-          const stream = proc.stderr as ReadableStream<Uint8Array> | number | undefined;
-          if (!stream || typeof stream === "number") return;
-          const decoder = new TextDecoder();
-          const reader = stream.getReader();
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              const chunk = decoder.decode(value, { stream: true });
-              if (chunk.length === 0) continue;
-              onEvent({ type: "agent-output", stepIndex, chunk });
-            }
-          } finally {
-            reader.releaseLock();
-          }
-        };
-
-        await Promise.all([pumpStdout(), pumpStderr()]);
-        const exitCode = await proc.exited;
-        currentProc = null;
+        const exitCode = await session.exited;
+        currentSession = null;
 
         onEvent({ type: "step-output-complete", stepIndex, exitCode });
 
@@ -165,6 +155,8 @@ export function runFlow(
           emitCancelledIfNeeded();
           return;
         }
+
+        const stepText = cleanOutput(session.raw, liveCols, liveRows);
 
         if (exitCode !== 0) {
           const feedback = `Agent exited with code ${exitCode}`;
@@ -185,7 +177,7 @@ export function runFlow(
             verdict = await validateOutput({
               stepPrompt: basePrompt,
               expectedResult: step.expectedResult,
-              output: stdoutAccum,
+              output: stepText,
             });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -218,8 +210,8 @@ export function runFlow(
           }
         }
 
-        stepOutputs[step.name] = stdoutAccum;
-        onEvent({ type: "step-complete", stepIndex, output: stdoutAccum });
+        stepOutputs[step.name] = stepText;
+        onEvent({ type: "step-complete", stepIndex, output: stepText });
         stepSucceeded = true;
         break;
       }
@@ -248,12 +240,15 @@ export function runFlow(
     cancel(): void {
       if (cancelled) return;
       cancelled = true;
-      if (currentProc) {
-        try {
-          currentProc.kill();
-        } catch {
-          // Process may have already exited; nothing to do.
-        }
+      if (currentSession) {
+        currentSession.kill();
+      }
+    },
+    resize(cols: number, rows: number): void {
+      liveCols = Math.max(2, cols);
+      liveRows = Math.max(2, rows);
+      if (currentSession) {
+        currentSession.resize(liveCols, liveRows);
       }
     },
   };
