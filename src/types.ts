@@ -89,6 +89,8 @@ export interface RunHandle {
   cancel(): void;
   /** Resize the PTY of the currently running step (no-op when idle). */
   resize(cols: number, rows: number): void;
+  /** Write raw bytes to the PTY of the currently running step (no-op when idle). */
+  write(data: string): void;
 }
 
 /** Optional terminal size hints for runFlow; defaults to 120x30. */

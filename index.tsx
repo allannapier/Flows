@@ -9,5 +9,9 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
   process.exit(0);
 }
 
-const renderer = await createCliRenderer({ exitOnCtrlC: true });
+// The renderer's built-in exitOnCtrlC handler destroys the app
+// unconditionally (it does not respect preventDefault), which would make it
+// impossible to send ctrl+c to an attached agent PTY. We own ctrl+c
+// ourselves — see src/ui/App.tsx.
+const renderer = await createCliRenderer({ exitOnCtrlC: false });
 createRoot(renderer).render(<App />);

@@ -72,7 +72,11 @@ Environment variables:
   save/cancel actions at the bottom, `esc` to go back
 - **Steps** — each step has: name, agent, prompt template, desired result,
   validation on/off, max retries, optional working directory
-- **Run screen** — live per-step checklist and streaming agent log; `esc` cancels
+- **Run screen** — live per-step checklist and streaming agent log; `esc` cancels.
+  Press `a` during a run to attach and type directly into the agent's terminal —
+  every keystroke goes to the agent PTY and the pane renders it live; `ctrl+]`
+  detaches. `ctrl+c` quits Flows everywhere except while attached, where it's
+  sent to the agent instead.
 
 ### Prompt templates
 

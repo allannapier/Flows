@@ -279,5 +279,10 @@ export function runFlow(
         currentSession.resize(liveCols, liveRows);
       }
     },
+    write(data: string): void {
+      if (currentSession) {
+        currentSession.write(data);
+      }
+    },
   };
 }

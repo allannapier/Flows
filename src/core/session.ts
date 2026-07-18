@@ -72,6 +72,16 @@ export class AgentSession {
     }
   }
 
+  /** Write raw input to the PTY. No-op once exited. */
+  write(data: string): void {
+    if (this._exited) return;
+    try {
+      this.pty.write(data);
+    } catch {
+      // The PTY may have exited concurrently; nothing to do.
+    }
+  }
+
   /** Idempotent: SIGTERM immediately, SIGKILL after 3s if still alive. */
   kill(): void {
     if (this._exited || this._killing) return;

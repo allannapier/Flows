@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { extend, useKeyboard, useTerminalDimensions } from "@opentui/react";
+import { extend, useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
+import { decodePasteBytes } from "@opentui/core";
 import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
 import { getFlow } from "../core/storage";
 import { runFlow } from "../core/engine";
 import type { Flow, RunEvent, RunHandle } from "../types";
 import { colors, Hint } from "./theme";
+import { setAttached } from "./attach-state";
 
 extend({ "ghostty-terminal": GhosttyTerminalRenderable });
 
@@ -75,6 +77,7 @@ export function RunScreen({
   const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null);
   const [flowStatus, setFlowStatus] = useState<"running" | "complete" | "failed">("running");
   const [finalError, setFinalError] = useState<string | null>(null);
+  const [attachedUi, setAttachedUi] = useState(false);
 
   const handleRef = useRef<RunHandle | null>(null);
   const termRef = useRef<GhosttyTerminalRenderable | null>(null);
@@ -147,13 +150,20 @@ export function RunScreen({
         break;
       case "flow-complete":
         setFlowStatus("complete");
+        detach();
         break;
       case "flow-failed":
         setFlowStatus("failed");
         setFinalError(e.error);
         setStatusMessage({ text: `flow failed: ${e.error}`, color: colors.error });
+        detach();
         break;
     }
+  }
+
+  function detach() {
+    setAttachedUi(false);
+    setAttached(false);
   }
 
   function start() {
@@ -164,6 +174,7 @@ export function RunScreen({
     setStatusMessage(null);
     setFlowStatus("running");
     setFinalError(null);
+    detach();
     handleRef.current = runFlow(flow, params, handleEvent, { cols: termCols, rows: termRows });
   }
 
@@ -171,6 +182,7 @@ export function RunScreen({
     start();
     return () => {
       handleRef.current?.cancel();
+      setAttached(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flow]);
@@ -180,21 +192,44 @@ export function RunScreen({
   }, [termCols, termRows]);
 
   useKeyboard((key) => {
+    if (attachedUi) {
+      if (key.eventType === "release") return;
+      const isDetachKey = key.raw === "\x1d" || key.sequence === "\x1d";
+      if (isDetachKey) {
+        detach();
+        return;
+      }
+      handleRef.current?.write(key.raw || key.sequence);
+      return;
+    }
+
     if (key.name === "escape") {
       handleRef.current?.cancel();
       onExit();
       return;
     }
-    if (flowStatus !== "running") {
-      if (key.name === "q") {
-        onExit();
+    if (flowStatus === "running") {
+      if (key.name === "a") {
+        setAttachedUi(true);
+        setAttached(true);
         return;
       }
-      if (key.name === "r") {
-        start();
-        return;
-      }
+      return;
     }
+    if (key.name === "q") {
+      onExit();
+      return;
+    }
+    if (key.name === "r") {
+      start();
+      return;
+    }
+  });
+
+  usePaste((event) => {
+    if (!attachedUi) return;
+    const text = decodePasteBytes(event.bytes);
+    handleRef.current?.write(text);
   });
 
   if (!flow) {
@@ -232,7 +267,14 @@ export function RunScreen({
             );
           })}
         </box>
-        <box flexDirection="column" flexGrow={1} border borderStyle="rounded" borderColor={colors.dim} title="Terminal">
+        <box
+          flexDirection="column"
+          flexGrow={1}
+          border
+          borderStyle="rounded"
+          borderColor={attachedUi ? colors.accent : colors.dim}
+          title={attachedUi ? "Terminal (attached — ctrl+] to detach)" : "Terminal"}
+        >
           <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} flexGrow={1} />
         </box>
       </box>
@@ -252,7 +294,11 @@ export function RunScreen({
         </box>
       )}
       <Hint>
-        {flowStatus === "running" ? "esc cancel" : "esc/q back to list · r re-run"}
+        {attachedUi
+          ? "ctrl+] detach · keys go to agent"
+          : flowStatus === "running"
+            ? "a attach · esc cancel"
+            : "esc/q back to list · r re-run"}
       </Hint>
     </box>
   );

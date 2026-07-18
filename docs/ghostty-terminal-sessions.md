@@ -1,6 +1,6 @@
 # Exploration: Ghostty-backed terminal sessions per agent
 
-**Status: Phase 1 implemented (PTY execution + terminal pane); Phase 2 (--continue chaining) implemented; Phase 3 planned.** This doc records what the
+**Status: all three phases implemented — Phase 1 (PTY execution + terminal pane), Phase 2 (--continue chaining), and Phase 3 (attach/takeover).** This doc records what the
 Ghostty library ecosystem offers, what was proven in a spike, and a proposed
 design for giving each agent step a real terminal session inside Flows.
 
@@ -116,6 +116,18 @@ Because Flows owns the PTY and the emulation, the run screen can offer
 render the live grid — Flows becomes a small terminal multiplexer for its
 agents, tmux-style. libghostty-vt's input-encoding APIs (Kitty keys, mouse
 SGR) cover the encoding side when we need fidelity beyond printable keys.
+
+**Implemented:** `a` attaches while a flow is running (`RunScreen`); every
+keypress is forwarded raw to the live step's PTY via `RunHandle.write()` (new
+in `src/types.ts`/`src/core/engine.ts`/`src/core/session.ts`), using
+`KeyEvent.raw` (falling back to `.sequence`) so control sequences and Kitty
+keyboard-protocol bytes pass through unmodified; pastes forward too via
+`usePaste` + `decodePasteBytes`. `ctrl+]` (`raw === "\x1d"`) detaches. Because
+OpenTUI 0.4.5's `exitOnCtrlC` renderer option destroys the app unconditionally
+and ignores `preventDefault()`, `index.tsx` now passes `exitOnCtrlC: false`
+and `src/ui/App.tsx` owns global ctrl+c-to-quit itself, gated on a small
+attach flag (`src/ui/attach-state.ts`) so ctrl+c reaches the agent instead of
+quitting Flows while attached.
 
 ## Risks & mitigations
 

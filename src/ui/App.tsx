@@ -1,9 +1,11 @@
 import { useCallback, useState } from "react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import { FlowList } from "./FlowList";
 import { FlowEditor } from "./FlowEditor";
 import { RunParamsForm } from "./RunParamsForm";
 import { RunScreen } from "./RunScreen";
 import { ConfirmDelete } from "./ConfirmDelete";
+import { isAttached } from "./attach-state";
 
 export type Screen =
   | { name: "list" }
@@ -16,11 +18,27 @@ export function App() {
   const [screen, setScreen] = useState<Screen>({ name: "list" });
   // Bumped whenever we return to the list so FlowList re-reads storage.
   const [listKey, setListKey] = useState(0);
+  const renderer = useRenderer();
 
   const goList = useCallback(() => {
     setListKey((k) => k + 1);
     setScreen({ name: "list" });
   }, []);
+
+  // Global ctrl+c quit, restoring the behavior the renderer's own
+  // exitOnCtrlC used to provide (now disabled in index.tsx because it
+  // ignores preventDefault). Suppressed while attached to an agent PTY, so
+  // ctrl+c reaches the agent instead of quitting Flows.
+  useKeyboard((key) => {
+    if (key.ctrl && key.name === "c" && !isAttached()) {
+      try {
+        renderer.destroy();
+      } catch {
+        // best effort cleanup
+      }
+      process.exit(0);
+    }
+  });
 
   switch (screen.name) {
     case "list":

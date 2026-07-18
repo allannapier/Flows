@@ -215,6 +215,65 @@ async function testEngineContinuation(): Promise<void> {
   console.log("engine continuation: OK");
 }
 
+async function testEngineWrite(): Promise<void> {
+  const flow: Flow = {
+    id: newFlowId(),
+    name: "Interactive Read Flow",
+    description: "One-step flow exercising RunHandle.write() (Phase 3 attach).",
+    parameters: [],
+    steps: [
+      {
+        id: "step-1",
+        name: "prompt",
+        agent: "custom",
+        customCommand: 'read line; echo "got:$line"',
+        prompt: "unused",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+
+  const events: RunEvent[] = [];
+  let sawStepStart = false;
+  const handle = runFlow(flow, {}, (e) => {
+    events.push(e);
+    if (e.type === "step-start") sawStepStart = true;
+  });
+
+  // Wait for the step's PTY to spawn and the shell's `read` to be waiting on
+  // stdin before writing — mirrors what RunScreen does when a user attaches
+  // and types.
+  const deadline = Date.now() + 5000;
+  while (!sawStepStart && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(sawStepStart, "expected step-start before writing to the PTY");
+
+  await new Promise((r) => setTimeout(r, 300));
+  handle.write("ping\r");
+
+  await handle.done;
+
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes("step-complete"), `expected step-complete, got: ${types.join(",")}`);
+  assert.ok(!types.includes("flow-failed"), `unexpected flow-failed, got: ${JSON.stringify(events.filter((e) => e.type === "flow-failed"))}`);
+
+  const stepComplete = events.find((e) => e.type === "step-complete");
+  assert.ok(stepComplete && stepComplete.type === "step-complete");
+  if (stepComplete && stepComplete.type === "step-complete") {
+    assert.ok(
+      stepComplete.output.includes("got:ping"),
+      `expected step output to include "got:ping", got: ${JSON.stringify(stepComplete.output)}`,
+    );
+  }
+
+  console.log("engine write (attach interactivity): OK");
+}
+
 async function main(): Promise<void> {
   if (!process.env.FLOWS_HOME) {
     throw new Error("Set FLOWS_HOME to a temp directory before running this smoke test.");
@@ -225,6 +284,7 @@ async function main(): Promise<void> {
   await testEngine();
   testBuildAgentCommand();
   await testEngineContinuation();
+  await testEngineWrite();
 
   console.log("OK");
 }
