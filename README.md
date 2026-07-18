@@ -65,6 +65,15 @@ Environment variables:
 | `FLOWS_VALIDATOR_MODEL` | `claude-opus-4-8` | Model used to validate step output |
 | `FLOWS_HOME` | `~/.flows` | Where flow definitions are stored (`$FLOWS_HOME/flows/*.json`) |
 
+### Troubleshooting
+
+**`Cannot find module 'react/jsx-dev-runtime'` (or `Cannot find package 'react'`) with a
+`.bun/install/cache/...` path** — the project's `node_modules` is missing, so Bun
+auto-installed `@opentui/react` into its global cache, where the `react` peer can't be
+resolved. Run `bun install` in the repo root, then `bun run start`. If it persists,
+check you're in the repo root and `node_modules/react` exists; `bun install --force`
+rebuilds it.
+
 ## Using the app
 
 - **Flow list** — `enter` run · `n` new flow · `e` edit · `d` delete · `q` quit
