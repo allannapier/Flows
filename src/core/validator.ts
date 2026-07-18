@@ -1,8 +1,13 @@
-// Built-in LLM validation using the Anthropic SDK. Judges whether a step's
-// agent output satisfies the step's expected result.
+// Built-in LLM validation. Judges whether a step's agent output satisfies
+// the step's expected result, dispatching to whichever provider is
+// configured (see src/core/config.ts) — Anthropic, OpenAI, Google, or a
+// custom OpenAI-compatible endpoint.
 
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import { GoogleGenAI, Type } from "@google/genai";
 import type { ValidationVerdict } from "../types";
+import { resolveValidator, type AppConfig } from "./config";
 
 const MAX_OUTPUT_CHARS = 80_000;
 
@@ -26,27 +31,7 @@ const SYSTEM_PROMPT =
   "a retry: if the task failed, say specifically what is missing or wrong " +
   "so the agent can fix it on the next attempt.";
 
-function resolveModel(): string {
-  return process.env.FLOWS_VALIDATOR_MODEL ?? "claude-opus-4-8";
-}
-
-function assertCredentialsConfigured(): void {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    throw new Error(
-      "Validation requires Anthropic API credentials. Set ANTHROPIC_API_KEY " +
-        "(or ANTHROPIC_AUTH_TOKEN) in your environment, or disable validation " +
-        "for this step.",
-    );
-  }
-}
-
-export async function validateOutput(args: {
-  stepPrompt: string;
-  expectedResult: string;
-  output: string;
-}): Promise<ValidationVerdict> {
-  assertCredentialsConfigured();
-
+function buildUserMessage(args: { stepPrompt: string; expectedResult: string; output: string }): string {
   const { stepPrompt, expectedResult, output } = args;
 
   let truncatedOutput = output;
@@ -58,17 +43,28 @@ export async function validateOutput(args: {
       `and has been truncated to the last ${MAX_OUTPUT_CHARS} characters.)`;
   }
 
-  const userMessage =
+  return (
     `Task prompt given to the agent:\n${stepPrompt}\n\n` +
     `Expected result:\n${expectedResult}\n\n` +
-    `Agent output:\n${truncatedOutput}${truncationNote}`;
+    `Agent output:\n${truncatedOutput}${truncationNote}`
+  );
+}
 
-  const client = new Anthropic();
+async function validateWithAnthropic(
+  userMessage: string,
+  model: string,
+  apiKey: string,
+  apiKeyEnvVar: string | undefined,
+): Promise<ValidationVerdict> {
+  // ANTHROPIC_AUTH_TOKEN is a bearer token, not an API key — construct the
+  // client accordingly so it lands on the right auth header.
+  const client =
+    apiKeyEnvVar === "ANTHROPIC_AUTH_TOKEN" ? new Anthropic({ authToken: apiKey }) : new Anthropic({ apiKey });
 
   let response: Anthropic.Message;
   try {
     response = await client.messages.create({
-      model: resolveModel(),
+      model,
       max_tokens: 4096,
       thinking: { type: "adaptive" },
       output_config: {
@@ -100,6 +96,120 @@ export async function validateOutput(args: {
     };
   }
 
-  const parsed = JSON.parse(textBlock.text) as ValidationVerdict;
-  return parsed;
+  return JSON.parse(textBlock.text) as ValidationVerdict;
+}
+
+async function validateWithOpenAI(
+  userMessage: string,
+  model: string,
+  apiKey: string,
+  baseUrl: string | undefined,
+): Promise<ValidationVerdict> {
+  const client = new OpenAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) });
+
+  let response: OpenAI.Chat.Completions.ChatCompletion;
+  try {
+    response = await client.chat.completions.create({
+      model,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "verdict", strict: true, schema: VERDICT_SCHEMA },
+      },
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Validator call failed: ${message}`);
+  }
+
+  const message = response.choices[0]?.message;
+  if (!message) {
+    return {
+      passed: false,
+      feedback: "Validator could not produce a verdict (no response choices)",
+    };
+  }
+  if (message.refusal) {
+    return {
+      passed: false,
+      feedback: `Validator could not produce a verdict (${message.refusal})`,
+    };
+  }
+  if (!message.content) {
+    return {
+      passed: false,
+      feedback: "Validator could not produce a verdict (no text response)",
+    };
+  }
+
+  return JSON.parse(message.content) as ValidationVerdict;
+}
+
+async function validateWithGoogle(
+  userMessage: string,
+  model: string,
+  apiKey: string,
+): Promise<ValidationVerdict> {
+  const client = new GoogleGenAI({ apiKey });
+
+  let response: Awaited<ReturnType<typeof client.models.generateContent>>;
+  try {
+    response = await client.models.generateContent({
+      model,
+      contents: userMessage,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            passed: { type: Type.BOOLEAN },
+            feedback: { type: Type.STRING },
+          },
+          required: ["passed", "feedback"],
+        },
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Validator call failed: ${message}`);
+  }
+
+  const text = response.text;
+  if (!text) {
+    const finishReason = response.candidates?.[0]?.finishReason ?? "unknown";
+    return {
+      passed: false,
+      feedback: `Validator could not produce a verdict (no text response, finish reason: ${finishReason})`,
+    };
+  }
+
+  return JSON.parse(text) as ValidationVerdict;
+}
+
+export async function validateOutput(args: {
+  stepPrompt: string;
+  expectedResult: string;
+  output: string;
+  /** Draft config to validate against instead of the persisted one (used by
+   * the Settings screen's "Test" button, which must not silently persist). */
+  configOverride?: AppConfig;
+}): Promise<ValidationVerdict> {
+  const { stepPrompt, expectedResult, output, configOverride } = args;
+  const resolved = resolveValidator(configOverride);
+  const userMessage = buildUserMessage({ stepPrompt, expectedResult, output });
+
+  switch (resolved.provider) {
+    case "anthropic":
+      return validateWithAnthropic(userMessage, resolved.model, resolved.apiKey, resolved.apiKeyEnvVar);
+    case "openai":
+      return validateWithOpenAI(userMessage, resolved.model, resolved.apiKey, undefined);
+    case "custom":
+      return validateWithOpenAI(userMessage, resolved.model, resolved.apiKey, resolved.baseUrl);
+    case "google":
+      return validateWithGoogle(userMessage, resolved.model, resolved.apiKey);
+  }
 }

@@ -5,6 +5,7 @@ import { FlowEditor } from "./FlowEditor";
 import { RunParamsForm } from "./RunParamsForm";
 import { RunScreen } from "./RunScreen";
 import { ConfirmDelete } from "./ConfirmDelete";
+import { SettingsScreen } from "./SettingsScreen";
 import { isAttached } from "./attach-state";
 
 export type Screen =
@@ -12,7 +13,8 @@ export type Screen =
   | { name: "edit"; flowId?: string }
   | { name: "run-params"; flowId: string }
   | { name: "run"; flowId: string; params: Record<string, string> }
-  | { name: "confirm-delete"; flowId: string };
+  | { name: "confirm-delete"; flowId: string }
+  | { name: "settings" };
 
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: "list" });
@@ -49,6 +51,7 @@ export function App() {
           onNew={() => setScreen({ name: "edit" })}
           onEdit={(flowId) => setScreen({ name: "edit", flowId })}
           onDelete={(flowId) => setScreen({ name: "confirm-delete", flowId })}
+          onSettings={() => setScreen({ name: "settings" })}
         />
       );
     case "edit":
@@ -73,5 +76,7 @@ export function App() {
     }
     case "run":
       return <RunScreen flowId={screen.flowId} params={screen.params} onExit={goList} />;
+    case "settings":
+      return <SettingsScreen onDone={goList} onCancel={() => setScreen({ name: "list" })} />;
   }
 }

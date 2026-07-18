@@ -10,6 +10,7 @@ const HINTS = [
   { keys: "n", label: "new" },
   { keys: "e", label: "edit" },
   { keys: "d", label: "delete" },
+  { keys: "s", label: "settings" },
   { keys: "q", label: "quit" },
 ];
 
@@ -18,11 +19,13 @@ export function FlowList({
   onNew,
   onEdit,
   onDelete,
+  onSettings,
 }: {
   onRun: (flowId: string) => void;
   onNew: () => void;
   onEdit: (flowId: string) => void;
   onDelete: (flowId: string) => void;
+  onSettings: () => void;
 }) {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -49,6 +52,8 @@ export function FlowList({
     } else if (key.name === "d") {
       const f = flows[selectedIndex];
       if (f) onDelete(f.id);
+    } else if (key.name === "s") {
+      onSettings();
     } else if (key.name === "return") {
       const f = flows[selectedIndex];
       if (f) onRun(f.id);

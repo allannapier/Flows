@@ -13,10 +13,12 @@ Built with [OpenTUI](https://opentui.com/) (`@opentui/react`) on Bun.
   parameters, and any number of steps.
 - **Run flows** with parameters: Flows prompts you for the values the flow declares,
   then executes each step in order in your chosen coding agent, streaming output live.
-- **Validate results**: after each step, the built-in LLM (Anthropic API) judges the
+- **Validate results**: after each step, a configurable validator LLM judges the
   agent's output against the step's desired result. Failed steps are retried with the
   validator's feedback injected into the prompt, up to a per-step retry limit.
 - **Delete flows** from the same UI.
+- **Configure the validator** in Settings: pick a provider (Anthropic, OpenAI, Google,
+  or a custom OpenAI-compatible endpoint), model, and API key without leaving the app.
 
 ## Supported agents
 
@@ -53,17 +55,35 @@ Requires [Bun](https://bun.sh) and at least one coding agent CLI on your PATH.
 
 ```sh
 bun install
-export ANTHROPIC_API_KEY=sk-ant-...   # needed for step validation
+export ANTHROPIC_API_KEY=sk-ant-...   # needed for step validation (default provider)
 bun run start
 ```
+
+### Validator LLM configuration
+
+The validator judges each step's output against its expected result. It's configured
+per-provider, resolved in this order:
+
+1. **Settings screen** (`s` from the flow list) — provider, model, API key, and (for
+   the custom provider) base URL, stored in `$FLOWS_HOME/config.json`.
+2. **`config.json` env-var fallback** — any field left blank in Settings falls back to
+   an environment variable for that provider (see table below). The default provider
+   is Anthropic with model `claude-opus-4-8` if nothing is configured at all.
 
 Environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Built-in validator LLM (only needed if any step has validation on) |
-| `FLOWS_VALIDATOR_MODEL` | `claude-opus-4-8` | Model used to validate step output |
-| `FLOWS_HOME` | `~/.flows` | Where flow definitions are stored (`$FLOWS_HOME/flows/*.json`) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | — | API key fallback for the Anthropic validator provider |
+| `OPENAI_API_KEY` | — | API key fallback for the OpenAI and custom (OpenAI-compatible) validator providers |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | — | API key fallback for the Google validator provider |
+| `FLOWS_VALIDATOR_MODEL` | `claude-opus-4-8` | Model fallback for the Anthropic validator provider |
+| `FLOWS_HOME` | `~/.flows` | Where flow definitions and `config.json` are stored |
+
+**Security note:** the API key entered in Settings is written to
+`$FLOWS_HOME/config.json` in plain text, with file permissions restricted to `0600`
+(owner read/write only). Leave the field blank in Settings to rely on the environment
+variable instead of persisting a key to disk.
 
 ### Troubleshooting
 
@@ -76,7 +96,7 @@ rebuilds it.
 
 ## Using the app
 
-- **Flow list** — `enter` run · `n` new flow · `e` edit · `d` delete · `q` quit
+- **Flow list** — `enter` run · `n` new flow · `e` edit · `d` delete · `s` settings · `q` quit
 - **Flow editor** — arrow keys to move, `enter` to edit a field or open a section,
   save/cancel actions at the bottom, `esc` to go back
 - **Steps** — each step has: name, agent, prompt template, desired result,
@@ -106,10 +126,11 @@ index.tsx            entry point (createCliRenderer + createRoot)
 src/types.ts         shared contract (Flow, FlowStep, RunEvent, ...)
 src/core/
   storage.ts         JSON persistence in $FLOWS_HOME/flows
+  config.ts          validator LLM config persistence ($FLOWS_HOME/config.json) + resolution
   agents.ts          agent registry + command builders
   session.ts         PTY-backed agent sessions (bun-pty)
   template.ts        {{...}} interpolation
-  validator.ts       Anthropic API structured-output validation
+  validator.ts       multi-provider structured-output validation (Anthropic/OpenAI/Google/custom)
   engine.ts          sequential run loop, streaming, retries, cancellation
 src/ui/
   App.tsx            screen router
@@ -119,6 +140,7 @@ src/ui/
   RunParamsForm.tsx  parameter entry
   RunScreen.tsx      live run view
   ConfirmDelete.tsx  delete confirmation
+  SettingsScreen.tsx validator LLM configuration
 ```
 
 The engine emits typed `RunEvent`s (step-start, agent-output, validation-result,
