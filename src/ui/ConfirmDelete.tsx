@@ -1,6 +1,12 @@
 import { useKeyboard } from "@opentui/react";
+import { TextAttributes } from "@opentui/core";
 import { getFlow, deleteFlow } from "../core/storage";
 import { colors, Hint } from "./theme";
+
+const HINTS = [
+  { keys: "y", label: "confirm" },
+  { keys: "n/esc", label: "cancel" },
+];
 
 export function ConfirmDelete({
   flowId,
@@ -14,6 +20,7 @@ export function ConfirmDelete({
   const flow = getFlow(flowId);
 
   useKeyboard((key) => {
+    if (key.ctrl || key.meta) return;
     if (key.name === "y") {
       deleteFlow(flowId);
       onDone();
@@ -33,13 +40,21 @@ export function ConfirmDelete({
         flexDirection="column"
         gap={1}
       >
-        <text fg={colors.text}>
-          Delete flow "{flow ? flow.name : flowId}"?
+        <text>
+          <span fg={colors.textSecondary}>Delete flow "</span>
+          <span fg={colors.textPrimary} attributes={TextAttributes.BOLD}>
+            {flow ? flow.name : flowId}
+          </span>
+          <span fg={colors.textSecondary}>"?</span>
         </text>
-        <text fg={colors.dim}>This cannot be undone.</text>
-        <text fg={colors.warning}>y / N</text>
+        <text fg={colors.textSecondary}>This cannot be undone.</text>
+        <text>
+          <span fg={colors.error} attributes={TextAttributes.BOLD}>y</span>
+          <span fg={colors.textSecondary}> / </span>
+          <span fg={colors.textPrimary} attributes={TextAttributes.BOLD}>N</span>
+        </text>
       </box>
-      <Hint>y confirm · n/esc cancel</Hint>
+      <Hint hints={HINTS} />
     </box>
   );
 }

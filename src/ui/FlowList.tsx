@@ -5,6 +5,14 @@ import { listFlows } from "../core/storage";
 import type { Flow } from "../types";
 import { colors, Hint } from "./theme";
 
+const HINTS = [
+  { keys: "⏎", label: "run" },
+  { keys: "n", label: "new" },
+  { keys: "e", label: "edit" },
+  { keys: "d", label: "delete" },
+  { keys: "q", label: "quit" },
+];
+
 export function FlowList({
   onRun,
   onNew,
@@ -25,6 +33,7 @@ export function FlowList({
   }, []);
 
   useKeyboard((key) => {
+    if (key.ctrl || key.meta) return;
     if (key.name === "q") {
       try {
         renderer.destroy();
@@ -56,20 +65,23 @@ export function FlowList({
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1}>
         <ascii-font text="FLOWS" font="tiny" color={colors.accent} />
-        <text fg={colors.textMuted}>Run multi-step agent workflows</text>
+        <text fg={colors.textSecondary}>Run multi-step agent workflows</text>
       </box>
       <box
         flexGrow={1}
         border
         borderStyle="rounded"
-        borderColor={colors.dim}
-        focusedBorderColor={colors.accent}
+        borderColor={colors.accent}
         title="Flows"
         margin={1}
         padding={1}
       >
         {flows.length === 0 ? (
-          <text fg={colors.dim}>No flows yet. Press n to create one.</text>
+          <text>
+            <span fg={colors.textSecondary}>No flows yet. Press </span>
+            <span fg={colors.accent}>n</span>
+            <span fg={colors.textSecondary}> to create your first flow.</span>
+          </text>
         ) : (
           <select
             focused
@@ -80,12 +92,18 @@ export function FlowList({
             onSelect={(_index, option) => {
               if (option) onRun(option.value as string);
             }}
-            selectedTextColor={colors.accent}
-            descriptionColor={colors.dim}
+            textColor={colors.textPrimary}
+            backgroundColor={colors.bg}
+            focusedBackgroundColor={colors.bg}
+            focusedTextColor={colors.textPrimary}
+            selectedBackgroundColor={colors.selectionBg}
+            selectedTextColor={colors.selectionFg}
+            descriptionColor={colors.textSecondary}
+            selectedDescriptionColor={colors.selectionFg}
           />
         )}
       </box>
-      <Hint>enter run · n new · e edit · d delete · q quit</Hint>
+      <Hint hints={HINTS} />
     </box>
   );
 }

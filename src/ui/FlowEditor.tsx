@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { getFlow, saveFlow, newFlowId } from "../core/storage";
 import type { Flow, FlowParameter, FlowStep } from "../types";
-import { colors, Hint } from "./theme";
+import { colors, Hint, SimpleRow, FieldRow, type KeyHintSpec } from "./theme";
 import { ParamForm } from "./ParamForm";
 import { StepEditor } from "./StepEditor";
 
@@ -202,7 +202,7 @@ export function FlowEditor({
       activate(row);
       return;
     }
-    if (key.name === "d") {
+    if (key.name === "d" && !key.ctrl && !key.meta) {
       removeAt(row);
     }
   });
@@ -249,6 +249,35 @@ export function FlowEditor({
   const isRow = (kind: RowKind["kind"], index?: number) =>
     cur.kind === kind && (index === undefined || (cur as any).index === index);
 
+  const paramsActive = cur.kind === "param" || cur.kind === "add-param";
+  const stepsActive = cur.kind === "step" || cur.kind === "add-step";
+  const editingField_ = mode === "edit-field";
+
+  // Contextual bottom hint bar: the selected row's own keys, plus
+  // screen-level keys that are always available in browse mode.
+  const bottomHints: KeyHintSpec[] = editingField_
+    ? [
+        { keys: "⏎", label: "save" },
+        { keys: "esc", label: "cancel" },
+      ]
+    : [
+        ...(cur.kind === "param" || cur.kind === "step"
+          ? [
+              { keys: "⏎", label: "open" },
+              { keys: "d", label: "delete" },
+              ...(cur.kind === "step" ? [{ keys: "⇧↑/⇧↓", label: "move" }] : []),
+            ]
+          : cur.kind === "add-param" || cur.kind === "add-step"
+            ? [{ keys: "⏎", label: "add" }]
+            : cur.kind === "save"
+              ? [{ keys: "⏎", label: "save" }]
+              : cur.kind === "cancel"
+                ? [{ keys: "⏎", label: "back" }]
+                : [{ keys: "⏎", label: "edit" }]),
+        { keys: "ctrl+s", label: "save flow" },
+        { keys: "esc", label: "back" },
+      ];
+
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
       <box paddingLeft={1} paddingTop={1}>
@@ -257,50 +286,92 @@ export function FlowEditor({
       {/* No gap/marginBottom between the column children here: OpenTUI 0.4.5
           draws the first text child of nested boxes one row down (overlapping
           its sibling) when this column layout uses inter-sibling spacing. */}
-      <box flexGrow={1} flexDirection="column" border borderStyle="rounded" borderColor={colors.dim} margin={1} padding={1}>
-        <box flexDirection="column">
-          <text fg={isRow("name") ? colors.accent : colors.text}>Name</text>
-          {mode === "edit-field" && editingField === "name" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.name || "(unnamed)"}</text>
-          )}
-        </box>
-        <box flexDirection="column">
-          <text fg={isRow("description") ? colors.accent : colors.text}>Description</text>
-          {mode === "edit-field" && editingField === "description" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.description || "(none)"}</text>
-          )}
-        </box>
+      <box flexGrow={1} flexDirection="column" border borderStyle="rounded" borderColor={colors.chrome} margin={1} padding={1}>
+        <FieldRow
+          label="Name"
+          selected={isRow("name")}
+          editing={editingField_ && editingField === "name"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.name}
+          placeholder="(unnamed)"
+        />
+        <FieldRow
+          label="Description"
+          selected={isRow("description")}
+          editing={editingField_ && editingField === "description"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.description}
+          placeholder="(none)"
+        />
 
-        <box flexDirection="column" border borderStyle="single" borderColor={colors.dim} title="Parameters" padding={1}>
-          {draft.parameters.length === 0 && <text fg={colors.dim}>No parameters.</text>}
+        <box
+          flexDirection="column"
+          border
+          borderStyle="single"
+          borderColor={paramsActive ? colors.accent : colors.chrome}
+          title={`Parameters (${draft.parameters.length})`}
+          padding={1}
+        >
+          {draft.parameters.length === 0 && <text fg={colors.textSecondary}>No parameters.</text>}
           {draft.parameters.map((p, i) => (
-            <text key={p.name + i} fg={isRow("param", i) ? colors.accent : colors.text}>
+            <SimpleRow
+              key={p.name + i}
+              selected={isRow("param", i)}
+              hint={[
+                { keys: "⏎", label: "open" },
+                { keys: "d", label: "delete" },
+              ]}
+            >
               {p.name}
-              {p.required ? " *" : ""} {p.description ? `— ${p.description}` : ""}
-            </text>
+              {p.required ? " *" : ""}
+              {p.description ? ` — ${p.description}` : ""}
+            </SimpleRow>
           ))}
-          <text fg={isRow("add-param") ? colors.accent : colors.success}>+ add parameter</text>
+          <SimpleRow selected={isRow("add-param")} fg={colors.success} hint={[{ keys: "⏎", label: "add" }]}>
+            + add parameter
+          </SimpleRow>
         </box>
 
-        <box flexDirection="column" border borderStyle="single" borderColor={colors.dim} title="Steps" padding={1}>
-          {draft.steps.length === 0 && <text fg={colors.dim}>No steps.</text>}
+        <box
+          flexDirection="column"
+          border
+          borderStyle="single"
+          borderColor={stepsActive ? colors.accent : colors.chrome}
+          title={`Steps (${draft.steps.length})`}
+          padding={1}
+        >
+          {draft.steps.length === 0 && <text fg={colors.textSecondary}>No steps.</text>}
           {draft.steps.map((s, i) => (
-            <text key={s.id} fg={isRow("step", i) ? colors.accent : colors.text}>
+            <SimpleRow
+              key={s.id}
+              selected={isRow("step", i)}
+              hint={[
+                { keys: "⏎", label: "open" },
+                { keys: "d", label: "delete" },
+                { keys: "⇧↑/⇧↓", label: "move" },
+              ]}
+            >
               {i + 1}. {s.name} ({s.agent})
-            </text>
+            </SimpleRow>
           ))}
-          <text fg={isRow("add-step") ? colors.accent : colors.success}>+ add step</text>
+          <SimpleRow selected={isRow("add-step")} fg={colors.success} hint={[{ keys: "⏎", label: "add" }]}>
+            + add step
+          </SimpleRow>
         </box>
 
-        <text fg={isRow("save") ? colors.accent : colors.success}>▶ Save flow</text>
-        <text fg={isRow("cancel") ? colors.accent : colors.dim}>Cancel</text>
+        <SimpleRow selected={isRow("save")} fg={colors.success} hint={[{ keys: "⏎", label: "save" }]}>
+          ▶ Save flow
+        </SimpleRow>
+        <SimpleRow selected={isRow("cancel")} fg={colors.textSecondary} hint={[{ keys: "⏎", label: "back" }]}>
+          Cancel
+        </SimpleRow>
         {error && <text fg={colors.error}>{error}</text>}
       </box>
-      <Hint>enter edit/open · d delete row · shift+up/down reorder step · ctrl+s save · esc back</Hint>
+      <Hint hints={bottomHints} />
     </box>
   );
 }

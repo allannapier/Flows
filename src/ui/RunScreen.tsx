@@ -5,7 +5,7 @@ import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
 import { getFlow } from "../core/storage";
 import { runFlow } from "../core/engine";
 import type { Flow, RunEvent, RunHandle } from "../types";
-import { colors, Hint } from "./theme";
+import { colors, Hint, marker, type KeyHintSpec } from "./theme";
 import { setAttached } from "./attach-state";
 
 extend({ "ghostty-terminal": GhosttyTerminalRenderable });
@@ -35,7 +35,7 @@ const STATUS_SYMBOL: Record<StepStatus, string> = {
 };
 
 const STATUS_COLOR: Record<StepStatus, string> = {
-  pending: colors.dim,
+  pending: colors.textSecondary,
   running: colors.accent,
   validating: colors.accent,
   retrying: colors.warning,
@@ -112,7 +112,7 @@ export function RunScreen({
           next[e.stepIndex] = "validating";
           return next;
         });
-        setStatusMessage({ text: "validating output...", color: colors.dim });
+        setStatusMessage({ text: "validating output...", color: colors.textSecondary });
         break;
       case "validation-result":
         if (e.verdict.passed) {
@@ -209,18 +209,18 @@ export function RunScreen({
       return;
     }
     if (flowStatus === "running") {
-      if (key.name === "a") {
+      if (key.name === "a" && !key.ctrl && !key.meta) {
         setAttachedUi(true);
         setAttached(true);
         return;
       }
       return;
     }
-    if (key.name === "q") {
+    if (key.name === "q" && !key.ctrl && !key.meta) {
       onExit();
       return;
     }
-    if (key.name === "r") {
+    if (key.name === "r" && !key.ctrl && !key.meta) {
       start();
       return;
     }
@@ -251,7 +251,7 @@ export function RunScreen({
           flexDirection="column"
           border
           borderStyle="rounded"
-          borderColor={colors.dim}
+          borderColor={colors.chrome}
           title="Steps"
           padding={1}
           width={STEPS_PANE_WIDTH}
@@ -259,11 +259,18 @@ export function RunScreen({
           {flow.steps.map((step, i) => {
             const status = statuses[i] ?? "pending";
             const attempt = attempts[i] ?? 1;
+            const running = status === "running" || status === "validating" || status === "retrying";
+            const bg = running ? colors.selectionBg : undefined;
+            const fg = running ? colors.selectionFg : STATUS_COLOR[status];
             return (
-              <text key={step.id} fg={STATUS_COLOR[status]}>
-                {STATUS_SYMBOL[status]} {step.name}
-                {attempt > 1 ? ` (x${attempt})` : ""}
-              </text>
+              <box key={step.id} flexDirection="row" backgroundColor={bg}>
+                <text fg={fg} bg={bg}>
+                  {/* status symbol doubles as the marker; the bar shows selection */}
+                  {" "}
+                  {STATUS_SYMBOL[status]} {step.name}
+                  {attempt > 1 ? ` (x${attempt})` : ""}
+                </text>
+              </box>
             );
           })}
         </box>
@@ -272,7 +279,7 @@ export function RunScreen({
           flexGrow={1}
           border
           borderStyle="rounded"
-          borderColor={attachedUi ? colors.accent : colors.dim}
+          borderColor={attachedUi ? colors.accent : colors.chrome}
           title={attachedUi ? "Terminal (attached — ctrl+] to detach)" : "Terminal"}
         >
           <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} flexGrow={1} />
@@ -293,13 +300,21 @@ export function RunScreen({
           <text fg={colors.error}>✗ Flow failed{finalError ? `: ${finalError}` : ""}</text>
         </box>
       )}
-      <Hint>
-        {attachedUi
-          ? "ctrl+] detach · keys go to agent"
-          : flowStatus === "running"
-            ? "a attach · esc cancel"
-            : "esc/q back to list · r re-run"}
-      </Hint>
+      <Hint hints={runScreenHints(attachedUi, flowStatus)} />
     </box>
   );
+}
+
+function runScreenHints(attachedUi: boolean, flowStatus: "running" | "complete" | "failed"): KeyHintSpec[] {
+  if (attachedUi) return [{ keys: "ctrl+]", label: "detach · keys go to agent" }];
+  if (flowStatus === "running") {
+    return [
+      { keys: "a", label: "attach" },
+      { keys: "esc", label: "cancel" },
+    ];
+  }
+  return [
+    { keys: "esc/q", label: "back to list" },
+    { keys: "r", label: "re-run" },
+  ];
 }

@@ -3,7 +3,7 @@ import { useKeyboard } from "@opentui/react";
 import type { SelectOption } from "@opentui/core";
 import { AGENTS, agentAvailable, agentSupportsContinuation } from "../core/agents";
 import type { FlowStep } from "../types";
-import { colors, Hint } from "./theme";
+import { colors, Hint, SimpleRow, FieldRow, ToggleRow, RowHint, marker, type KeyHintSpec } from "./theme";
 
 type TextField = "name" | "customCommand" | "prompt" | "expectedResult" | "maxRetries" | "workingDir";
 
@@ -177,6 +177,33 @@ export function StepEditor({
     value: a.id,
   }));
   const agentLabel = AGENTS.find((a) => a.id === draft.agent)?.label ?? draft.agent;
+  const isRow = (name: string) => rows[safeCursor] === name;
+
+  // Contextual bottom hint bar: keys available for the currently selected
+  // row, plus screen-level keys.
+  const bottomHints: KeyHintSpec[] = editingAgent
+    ? [
+        { keys: "⏎", label: "choose" },
+        { keys: "esc", label: "cancel" },
+      ]
+    : editingField
+      ? [
+          { keys: "⏎", label: "save" },
+          { keys: "esc", label: "cancel" },
+        ]
+      : [
+          ...(rows[safeCursor] === "agent"
+            ? [{ keys: "⏎", label: "choose" }]
+            : rows[safeCursor] === "validate" || rows[safeCursor] === "continueSession"
+              ? [{ keys: "⏎", label: "toggle" }]
+              : rows[safeCursor] === "save"
+                ? [{ keys: "⏎", label: "save" }]
+                : rows[safeCursor] === "cancel"
+                  ? [{ keys: "⏎", label: "back" }]
+                  : [{ keys: "⏎", label: "edit" }]),
+          { keys: "up/down", label: "move" },
+          { keys: "esc", label: "back" },
+        ];
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
@@ -190,17 +217,26 @@ export function StepEditor({
         margin={1}
         padding={1}
       >
-        <box flexDirection="column">
-          <text fg={rows[safeCursor] === "name" ? colors.accent : colors.text}>Name</text>
-          {editingField === "name" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.name || "(unnamed)"}</text>
-          )}
-        </box>
+        <FieldRow
+          label="Name"
+          selected={isRow("name")}
+          editing={editingField === "name"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.name}
+          placeholder="(unnamed)"
+        />
 
         <box flexDirection="column">
-          <text fg={rows[safeCursor] === "agent" ? colors.accent : colors.text}>Agent</text>
+          <box flexDirection="row" backgroundColor={isRow("agent") ? colors.selectionBg : undefined}>
+            <text fg={isRow("agent") ? colors.selectionFg : colors.textSecondary} bg={isRow("agent") ? colors.selectionBg : undefined}>
+              {marker(isRow("agent"))}Agent
+            </text>
+            {isRow("agent") && !editingAgent && (
+              <RowHint hints={[{ keys: "⏎", label: "choose" }]} bg={colors.selectionBg} />
+            )}
+          </box>
           {editingAgent ? (
             <select
               focused
@@ -211,91 +247,104 @@ export function StepEditor({
                 if (option) setDraft((d) => ({ ...d, agent: option.value }));
                 setEditingAgent(false);
               }}
+              textColor={colors.textPrimary}
+              backgroundColor={colors.bg}
+              focusedBackgroundColor={colors.bg}
+              focusedTextColor={colors.textPrimary}
+              selectedBackgroundColor={colors.selectionBg}
+              selectedTextColor={colors.selectionFg}
+              descriptionColor={colors.textSecondary}
+              selectedDescriptionColor={colors.selectionFg}
             />
           ) : (
-            <text fg={colors.textMuted}>{agentLabel}</text>
+            <box flexDirection="row" backgroundColor={isRow("agent") ? colors.selectionBg : undefined}>
+              <text
+                fg={isRow("agent") ? colors.selectionFg : colors.textPrimary}
+                bg={isRow("agent") ? colors.selectionBg : undefined}
+              >
+                {"  "}
+                {agentLabel}
+              </text>
+            </box>
           )}
         </box>
 
         {draft.agent === "custom" && (
-          <box flexDirection="column">
-            <text fg={rows[safeCursor] === "customCommand" ? colors.accent : colors.text}>
-              Custom command (uses $FLOW_PROMPT)
-            </text>
-            {editingField === "customCommand" ? (
-              <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-            ) : (
-              <text fg={colors.textMuted}>{draft.customCommand || "(none)"}</text>
-            )}
-          </box>
+          <FieldRow
+            label="Custom command (uses $FLOW_PROMPT)"
+            selected={isRow("customCommand")}
+            editing={editingField === "customCommand"}
+            fieldDraft={fieldDraft}
+            onInput={setFieldDraft}
+            onSubmit={commitField}
+            value={draft.customCommand ?? ""}
+            placeholder="(none)"
+          />
         )}
 
-        <box flexDirection="column">
-          <text fg={rows[safeCursor] === "prompt" ? colors.accent : colors.text}>
-            Prompt (supports {"{{params.<name>}}"} and {"{{steps.<name>.output}}"})
-          </text>
-          {editingField === "prompt" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.prompt || "(empty)"}</text>
-          )}
-        </box>
+        <FieldRow
+          label={`Prompt (supports {{params.<name>}} and {{steps.<name>.output}})`}
+          selected={isRow("prompt")}
+          editing={editingField === "prompt"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.prompt}
+          placeholder="(empty)"
+        />
 
-        <box flexDirection="column">
-          <text fg={rows[safeCursor] === "expectedResult" ? colors.accent : colors.text}>
-            Expected result (used by the validator)
-          </text>
-          {editingField === "expectedResult" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.expectedResult || "(empty)"}</text>
-          )}
-        </box>
+        <FieldRow
+          label="Expected result (used by the validator)"
+          selected={isRow("expectedResult")}
+          editing={editingField === "expectedResult"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.expectedResult}
+          placeholder="(empty)"
+        />
 
-        <text fg={rows[safeCursor] === "validate" ? colors.accent : colors.text}>
-          Validate output: {draft.validate ? "[x] yes" : "[ ] no"}
-        </text>
+        <ToggleRow label="Validate output" selected={isRow("validate")} value={draft.validate} />
 
-        <text
-          fg={
-            !agentSupportsContinuation(draft.agent)
-              ? colors.dim
-              : rows[safeCursor] === "continueSession"
-                ? colors.accent
-                : colors.text
-          }
-        >
-          Continue session:{" "}
-          {agentSupportsContinuation(draft.agent)
-            ? draft.continueSession
-              ? "[x] yes"
-              : "[ ] no"
-            : "not supported for this agent"}
-        </text>
+        <ToggleRow
+          label="Continue session"
+          selected={isRow("continueSession")}
+          value={!!draft.continueSession}
+          disabled={!agentSupportsContinuation(draft.agent)}
+          disabledNote="not supported for this agent"
+        />
 
-        <box flexDirection="column">
-          <text fg={rows[safeCursor] === "maxRetries" ? colors.accent : colors.text}>Max retries (0-5)</text>
-          {editingField === "maxRetries" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.maxRetries}</text>
-          )}
-        </box>
+        <FieldRow
+          label="Max retries (0-5)"
+          selected={isRow("maxRetries")}
+          editing={editingField === "maxRetries"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={String(draft.maxRetries)}
+          placeholder="0"
+        />
 
-        <box flexDirection="column">
-          <text fg={rows[safeCursor] === "workingDir" ? colors.accent : colors.text}>Working directory (optional)</text>
-          {editingField === "workingDir" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.workingDir || "(cwd)"}</text>
-          )}
-        </box>
+        <FieldRow
+          label="Working directory (optional)"
+          selected={isRow("workingDir")}
+          editing={editingField === "workingDir"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.workingDir ?? ""}
+          placeholder="(cwd)"
+        />
 
-        <text fg={rows[safeCursor] === "save" ? colors.accent : colors.success}>▶ Save step</text>
-        <text fg={rows[safeCursor] === "cancel" ? colors.accent : colors.dim}>Cancel</text>
+        <SimpleRow selected={isRow("save")} fg={colors.success} hint={[{ keys: "⏎", label: "save" }]}>
+          ▶ Save step
+        </SimpleRow>
+        <SimpleRow selected={isRow("cancel")} fg={colors.textSecondary} hint={[{ keys: "⏎", label: "back" }]}>
+          Cancel
+        </SimpleRow>
         {error && <text fg={colors.error}>{error}</text>}
       </box>
-      <Hint>enter edit/toggle/save · up/down move · esc back</Hint>
+      <Hint hints={bottomHints} />
     </box>
   );
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import type { FlowParameter } from "../types";
-import { colors, Hint } from "./theme";
+import { colors, Hint, FieldRow, SimpleRow, ToggleRow, type KeyHintSpec } from "./theme";
 
 type FieldKind = "name" | "description" | "default";
 
@@ -97,6 +97,24 @@ export function ParamForm({
     }
   });
 
+  const row = ROWS[cursor];
+  const bottomHints: KeyHintSpec[] = editing
+    ? [
+        { keys: "⏎", label: "save" },
+        { keys: "esc", label: "cancel" },
+      ]
+    : [
+        ...(row === "required"
+          ? [{ keys: "⏎", label: "toggle" }]
+          : row === "save"
+            ? [{ keys: "⏎", label: "save" }]
+            : row === "cancel"
+              ? [{ keys: "⏎", label: "back" }]
+              : [{ keys: "⏎", label: "edit" }]),
+        { keys: "up/down", label: "move" },
+        { keys: "esc", label: "back" },
+      ];
+
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
       <box
@@ -109,38 +127,46 @@ export function ParamForm({
         margin={1}
         padding={1}
       >
-        <box flexDirection="column">
-          <text fg={cursor === 0 ? colors.accent : colors.text}>Name</text>
-          {editing === "name" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.name || "(unnamed)"}</text>
-          )}
-        </box>
-        <box flexDirection="column">
-          <text fg={cursor === 1 ? colors.accent : colors.text}>Description</text>
-          {editing === "description" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.description || "(none)"}</text>
-          )}
-        </box>
-        <text fg={cursor === 2 ? colors.accent : colors.text}>
-          Required: {draft.required ? "[x] yes" : "[ ] no"}
-        </text>
-        <box flexDirection="column">
-          <text fg={cursor === 3 ? colors.accent : colors.text}>Default value</text>
-          {editing === "default" ? (
-            <input focused value={fieldDraft} onInput={setFieldDraft} onSubmit={commitField} />
-          ) : (
-            <text fg={colors.textMuted}>{draft.default || "(none)"}</text>
-          )}
-        </box>
-        <text fg={cursor === 4 ? colors.accent : colors.success}>▶ Save parameter</text>
-        <text fg={cursor === 5 ? colors.accent : colors.dim}>Cancel</text>
+        <FieldRow
+          label="Name"
+          selected={cursor === 0}
+          editing={editing === "name"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.name}
+          placeholder="(unnamed)"
+        />
+        <FieldRow
+          label="Description"
+          selected={cursor === 1}
+          editing={editing === "description"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.description}
+          placeholder="(none)"
+        />
+        <ToggleRow label="Required" selected={cursor === 2} value={draft.required} />
+        <FieldRow
+          label="Default value"
+          selected={cursor === 3}
+          editing={editing === "default"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.default ?? ""}
+          placeholder="(none)"
+        />
+        <SimpleRow selected={cursor === 4} fg={colors.success} hint={[{ keys: "⏎", label: "save" }]}>
+          ▶ Save parameter
+        </SimpleRow>
+        <SimpleRow selected={cursor === 5} fg={colors.textSecondary} hint={[{ keys: "⏎", label: "back" }]}>
+          Cancel
+        </SimpleRow>
         {error && <text fg={colors.error}>{error}</text>}
       </box>
-      <Hint>enter edit/toggle/save · up/down move · esc back</Hint>
+      <Hint hints={bottomHints} />
     </box>
   );
 }
