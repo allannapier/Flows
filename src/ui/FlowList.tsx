@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { SelectOption } from "@opentui/core";
 import { listFlows } from "../core/storage";
+import { getInProgressRunForFlow } from "../core/runManager";
 import type { Flow } from "../types";
 import { colors, Hint } from "./theme";
 
@@ -9,6 +10,7 @@ const HINTS = [
   { keys: "⏎", label: "run" },
   { keys: "n", label: "new" },
   { keys: "e", label: "edit" },
+  { keys: "h", label: "history" },
   { keys: "d", label: "delete" },
   { keys: "s", label: "settings" },
   { keys: "q", label: "quit" },
@@ -16,24 +18,46 @@ const HINTS = [
 
 export function FlowList({
   onRun,
+  onResume,
   onNew,
   onEdit,
+  onHistory,
   onDelete,
   onSettings,
 }: {
   onRun: (flowId: string) => void;
+  /** A run is already in progress for this flow — reattach to it instead of
+   * starting a new one. */
+  onResume: (flowId: string, runId: string) => void;
   onNew: () => void;
   onEdit: (flowId: string) => void;
+  onHistory: (flowId: string) => void;
   onDelete: (flowId: string) => void;
   onSettings: () => void;
 }) {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const renderer = useRenderer();
+  // getInProgressRunForFlow is read fresh on every render (see `options`
+  // below), but nothing normally triggers a re-render while a background
+  // run finishes on its own — poll so the "● running" tag doesn't go stale
+  // while just sitting on this screen.
+  const [, pulse] = useReducer((n) => n + 1, 0);
 
   useEffect(() => {
     setFlows(listFlows());
   }, []);
+
+  useEffect(() => {
+    const id = setInterval(pulse, 2000);
+    return () => clearInterval(id);
+  }, []);
+
+  function activate(f: Flow) {
+    const inProgress = getInProgressRunForFlow(f.id);
+    if (inProgress) onResume(f.id, inProgress.id);
+    else onRun(f.id);
+  }
 
   useKeyboard((key) => {
     if (key.ctrl || key.meta) return;
@@ -49,6 +73,9 @@ export function FlowList({
     } else if (key.name === "e") {
       const f = flows[selectedIndex];
       if (f) onEdit(f.id);
+    } else if (key.name === "h") {
+      const f = flows[selectedIndex];
+      if (f) onHistory(f.id);
     } else if (key.name === "d") {
       const f = flows[selectedIndex];
       if (f) onDelete(f.id);
@@ -56,15 +83,19 @@ export function FlowList({
       onSettings();
     } else if (key.name === "return") {
       const f = flows[selectedIndex];
-      if (f) onRun(f.id);
+      if (f) activate(f);
     }
   });
 
-  const options: SelectOption[] = flows.map((f) => ({
-    name: f.name || "(untitled flow)",
-    description: `${f.description || "No description"}  ·  ${f.steps.length} step${f.steps.length === 1 ? "" : "s"}`,
-    value: f.id,
-  }));
+  const options: SelectOption[] = flows.map((f) => {
+    const inProgress = getInProgressRunForFlow(f.id);
+    const base = `${f.description || "No description"}  ·  ${f.steps.length} step${f.steps.length === 1 ? "" : "s"}`;
+    return {
+      name: f.name || "(untitled flow)",
+      description: inProgress ? `${base}  ·  ● running` : base,
+      value: f.id,
+    };
+  });
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
@@ -95,7 +126,8 @@ export function FlowList({
             selectedIndex={selectedIndex}
             onChange={(index) => setSelectedIndex(index)}
             onSelect={(_index, option) => {
-              if (option) onRun(option.value as string);
+              const f = flows.find((flow) => flow.id === option?.value);
+              if (f) activate(f);
             }}
             textColor={colors.textPrimary}
             backgroundColor={colors.bg}

@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { TextAttributes } from "@opentui/core";
 import { getFlow, deleteFlow } from "../core/storage";
+import { deleteRunsForFlow } from "../core/runStore";
 import { colors, Hint, Button } from "./theme";
 
 const HINTS = [
@@ -23,6 +24,7 @@ export function ConfirmDelete({
     if (key.ctrl || key.meta) return;
     if (key.name === "y") {
       deleteFlow(flowId);
+      deleteRunsForFlow(flowId);
       onDone();
     } else if (key.name === "n" || key.name === "escape") {
       onCancel();

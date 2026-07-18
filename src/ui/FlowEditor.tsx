@@ -236,9 +236,18 @@ export function FlowEditor({
 
   if (mode === "step-form") {
     const existing: FlowStep | null = stepFormIndex === null ? null : draft.steps[stepFormIndex] ?? null;
+    // Only steps that will already have run by the time this one does are
+    // safe to reference via {{steps.<name>.output}} — i.e. steps before it
+    // (or, when appending a new step, every step that exists so far).
+    const priorStepNames =
+      stepFormIndex === null ? draft.steps.map((s) => s.name) : draft.steps.slice(0, stepFormIndex).map((s) => s.name);
+    const previousStep = stepFormIndex === null ? draft.steps[draft.steps.length - 1] : undefined;
     return (
       <StepEditor
         step={existing}
+        parameters={draft.parameters}
+        priorStepNames={priorStepNames}
+        previousStep={previousStep}
         onCancel={() => setMode("browse")}
         onSave={(s) => {
           setDraft((d) => {
@@ -343,6 +352,7 @@ export function FlowEditor({
               {p.name}
               {p.required ? " *" : ""}
               {p.description ? ` — ${p.description}` : ""}
+              {p.choices?.length ? ` [${p.choices.join("/")}]` : ""}
             </SimpleRow>
           ))}
           <SimpleRow selected={isRow("add-param")} fg={colors.success} hint={[{ keys: "⏎", label: "add" }]}>

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
+import type { TabSelectOption, TabSelectRenderable } from "@opentui/core";
 import { getFlow } from "../core/storage";
 import type { Flow } from "../types";
 import { colors, Hint, RowHint, Button, marker, type KeyHintSpec } from "./theme";
@@ -18,11 +19,22 @@ export function RunParamsForm({
 
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
-    for (const p of params) initial[p.name] = p.default ?? "";
+    for (const p of params) {
+      // Choice params always have a valid selection (never free-typed empty).
+      initial[p.name] = p.choices?.length ? (p.default ?? p.choices[0] ?? "") : (p.default ?? "");
+    }
     return initial;
   });
   const [focusIndex, setFocusIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Tracks which choice-param tab-selects have already had their initial
+  // selection set, keyed by param name — the ref callback below is a new
+  // function identity every render, so React invokes it (with the *same*
+  // node) on every re-render, not just on mount. setSelectedIndex() also
+  // fires onChange, so calling it unguarded on every render would trigger
+  // setValues -> re-render -> ref fires again -> infinite update loop (see
+  // the identical gotoBufferEnd fix in theme.tsx's TextAreaFieldRow).
+  const initializedTabSelects = useRef<Record<string, TabSelectRenderable>>({});
 
   // Flows with no parameters skip straight to running.
   useEffect(() => {
@@ -115,29 +127,68 @@ export function RunParamsForm({
                   {p.name}
                   {p.required ? " *" : ""}
                   {p.description ? `  — ${p.description}` : ""}
-                  {p.default ? `  (default: ${p.default})` : ""}
+                  {p.choices?.length ? `  (${p.choices.join(" / ")})` : p.default ? `  (default: ${p.default})` : ""}
                 </text>
-                {focused && <RowHint hints={[{ keys: "⏎", label: "next field" }]} bg={bg} />}
-              </box>
-              <box flexDirection="row" backgroundColor={bg}>
-                <text fg={labelFg} bg={bg}>
-                  {"  "}
-                </text>
-                <input
-                  flexGrow={1}
-                  focused={focused}
-                  placeholder={p.default ?? ""}
-                  value={values[p.name] ?? ""}
-                  onInput={(v) => setValues((prev) => ({ ...prev, [p.name]: v }))}
-                  onSubmit={() => {
-                    if (i === params.length - 1) {
-                      trySubmit(values);
-                    } else {
-                      setFocusIndex(i + 1);
+                {focused && (
+                  <RowHint
+                    hints={
+                      p.choices?.length ? [{ keys: "←→", label: "choose" }, { keys: "⏎", label: "next field" }] : [{ keys: "⏎", label: "next field" }]
                     }
-                  }}
-                />
+                    bg={bg}
+                  />
+                )}
               </box>
+              {p.choices?.length ? (
+                <box height={3}>
+                  <tab-select
+                    ref={(node) => {
+                      if (!node || initializedTabSelects.current[p.name] === node) return;
+                      initializedTabSelects.current[p.name] = node;
+                      const idx = Math.max(0, p.choices!.indexOf(values[p.name] ?? ""));
+                      node.setSelectedIndex(idx);
+                    }}
+                    focused={focused}
+                    flexGrow={1}
+                    tabWidth={14}
+                    showDescription={false}
+                    options={p.choices.map((c): TabSelectOption => ({ name: c, description: "", value: c }))}
+                    onChange={(_idx, option) => {
+                      if (option) setValues((prev) => ({ ...prev, [p.name]: option.value }));
+                    }}
+                    onSelect={(_idx, option) => {
+                      if (option) setValues((prev) => ({ ...prev, [p.name]: option.value }));
+                      if (i === params.length - 1) trySubmit(values);
+                      else setFocusIndex(i + 1);
+                    }}
+                    textColor={colors.textPrimary}
+                    backgroundColor={colors.bg}
+                    focusedBackgroundColor={colors.bg}
+                    focusedTextColor={colors.textPrimary}
+                    selectedBackgroundColor={colors.selectionBg}
+                    selectedTextColor={colors.selectionFg}
+                  />
+                </box>
+              ) : (
+                <box flexDirection="row" backgroundColor={bg}>
+                  <text fg={labelFg} bg={bg}>
+                    {"  "}
+                  </text>
+                  <input
+                    flexGrow={1}
+                    focused={focused}
+                    placeholder={p.default ?? ""}
+                    value={values[p.name] ?? ""}
+                    onInput={(v) => setValues((prev) => ({ ...prev, [p.name]: v }))}
+                    onSubmit={() => {
+                      if (i === params.length - 1) {
+                        trySubmit(values);
+                      } else {
+                        setFocusIndex(i + 1);
+                      }
+                    }}
+                  />
+                </box>
+              )}
             </box>
           );
         })}

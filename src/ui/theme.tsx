@@ -5,7 +5,7 @@
 // contain JSX syntax under this project's tsconfig.
 
 import type { ReactNode, RefObject } from "react";
-import type { TabSelectOption, TextareaRenderable } from "@opentui/core";
+import type { ContentChangeEvent, CursorChangeEvent, TabSelectOption, TextareaRenderable } from "@opentui/core";
 
 // ---------------------------------------------------------------------------
 // Palette
@@ -318,6 +318,8 @@ export function TextAreaFieldRow({
   value,
   placeholder,
   rows = 6,
+  onContentChange,
+  onCursorChange,
 }: {
   label: string;
   selected: boolean;
@@ -327,6 +329,8 @@ export function TextAreaFieldRow({
   value: string;
   placeholder: string;
   rows?: number;
+  onContentChange?: (event: ContentChangeEvent) => void;
+  onCursorChange?: (event: CursorChangeEvent) => void;
 }) {
   const bg = selected ? colors.selectionBg : undefined;
   const labelFg = selected ? colors.selectionFg : colors.textSecondary;
@@ -346,12 +350,20 @@ export function TextAreaFieldRow({
         <box height={rows} border borderStyle="single" borderColor={colors.accent}>
           <textarea
             ref={(node) => {
+              // This inline callback is a new function identity every
+              // render, so React invokes it (with the *same* node) on every
+              // re-render, not just on mount — guard on node identity so
+              // gotoBufferEnd() only fires once per real mount. Without
+              // this, any state update while editing (e.g. the placeholder
+              // autocomplete's onContentChange -> setState) would yank the
+              // cursor back to the end on every keystroke.
+              const isNewMount = node !== null && node !== textareaRef.current;
               textareaRef.current = node;
               // TextareaRenderable.setText() (used internally for
               // initialValue) leaves the cursor at buffer position 0, so
               // typing would prepend before existing content instead of
               // continuing after it — move to the end on mount.
-              if (node) node.gotoBufferEnd();
+              if (isNewMount) node.gotoBufferEnd();
             }}
             flexGrow={1}
             focused
@@ -362,6 +374,8 @@ export function TextAreaFieldRow({
             focusedBackgroundColor={colors.bg}
             focusedTextColor={colors.textPrimary}
             placeholderColor={colors.textPlaceholder}
+            onContentChange={onContentChange}
+            onCursorChange={onCursorChange}
           />
         </box>
       ) : (
@@ -372,6 +386,48 @@ export function TextAreaFieldRow({
           </text>
         </box>
       )}
+    </box>
+  );
+}
+
+/** Floating placeholder-autocomplete list shown under a textarea once the
+ * user types "{{" — highlights the currently-arrowed-to item. Rendered
+ * inline (pushing following rows down) since this is a terminal UI with no
+ * real overlay/z-index.
+ *
+ * Kept permanently mounted and toggled via the `visible` prop rather than
+ * conditionally rendered by the caller: removing/re-adding this box as a
+ * *child* (mount/unmount) doesn't reliably force an immediate repaint in
+ * this renderer — the screen can be left showing a stale frame until some
+ * unrelated event (e.g. the next keystroke) happens to repaint it. Toggling
+ * `visible` on an already-mounted node is a plain prop update, which (like
+ * cursor-highlight changes elsewhere in this app) does repaint immediately. */
+export function SuggestionDropdown({
+  visible,
+  items,
+  activeIndex,
+  more,
+}: {
+  visible: boolean;
+  items: string[];
+  activeIndex: number;
+  /** Count of additional matches beyond `items` that aren't shown. */
+  more?: number;
+}) {
+  return (
+    <box visible={visible} flexDirection="column" border borderStyle="single" borderColor={colors.accent} marginLeft={2}>
+      {items.map((item, i) => {
+        const active = i === activeIndex;
+        return (
+          <text key={item} fg={active ? colors.selectionFg : colors.textSecondary} bg={active ? colors.selectionBg : undefined}>
+            {marker(active)}
+            {"{{"}
+            {item}
+            {"}}"}
+          </text>
+        );
+      })}
+      {!!more && <text fg={colors.textPlaceholder}>  +{more} more</text>}
     </box>
   );
 }

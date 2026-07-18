@@ -16,6 +16,12 @@ export interface FlowParameter {
   description: string;
   required: boolean;
   default?: string;
+  /**
+   * When set (non-empty), this parameter is a single-select from this fixed
+   * list rather than free text — both when authoring the flow and when
+   * supplying values to run it. Absent/empty means free text.
+   */
+  choices?: string[];
 }
 
 export interface FlowStep {
@@ -97,6 +103,40 @@ export interface RunHandle {
 export interface RunOptions {
   cols?: number;
   rows?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Run history (persisted record of a finished/in-progress run)
+// ---------------------------------------------------------------------------
+
+export type RunStatus = "running" | "complete" | "failed" | "cancelled";
+
+export interface RunStepRecord {
+  stepId: string;
+  stepName: string;
+  status: "pending" | "done" | "failed";
+  attempts: number;
+  /** Cleaned (non-ANSI) output text, present once the step has completed. */
+  output?: string;
+  error?: string;
+}
+
+/** A single run of a flow — one JSON file per run under
+ * `${FLOWS_HOME}/runs/<flowId>/<runId>.json`. Written (and kept up to date)
+ * by src/core/runManager.ts; read by the run history UI via
+ * src/core/runStore.ts. */
+export interface RunRecord {
+  id: string;
+  flowId: string;
+  /** Snapshot of the flow's name at run time, so history stays readable
+   * even if the flow is later renamed or deleted. */
+  flowName: string;
+  params: Record<string, string>;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  steps: RunStepRecord[];
 }
 
 // Implemented in src/core/engine.ts:

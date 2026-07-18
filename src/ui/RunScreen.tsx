@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { extend, useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
 import { decodePasteBytes } from "@opentui/core";
 import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
 import { getFlow } from "../core/storage";
-import { runFlow } from "../core/engine";
-import type { Flow, RunEvent, RunHandle } from "../types";
-import { colors, Hint, marker, type KeyHintSpec } from "./theme";
+import { cancelRun, getActiveRun, startRun, subscribeRun, type StepUiStatus } from "../core/runManager";
+import type { Flow } from "../types";
+import { colors, Hint, type KeyHintSpec } from "./theme";
 import { setAttached } from "./attach-state";
 
 extend({ "ghostty-terminal": GhosttyTerminalRenderable });
@@ -18,14 +18,7 @@ declare module "@opentui/react" {
   }
 }
 
-type StepStatus = "pending" | "running" | "validating" | "retrying" | "done" | "failed";
-
-interface StatusMessage {
-  text: string;
-  color: string;
-}
-
-const STATUS_SYMBOL: Record<StepStatus, string> = {
+const STATUS_SYMBOL: Record<StepUiStatus, string> = {
   pending: "○",
   running: "▶",
   validating: "◐",
@@ -34,13 +27,20 @@ const STATUS_SYMBOL: Record<StepStatus, string> = {
   failed: "✗",
 };
 
-const STATUS_COLOR: Record<StepStatus, string> = {
+const STATUS_COLOR: Record<StepUiStatus, string> = {
   pending: colors.textSecondary,
   running: colors.accent,
   validating: colors.accent,
   retrying: colors.warning,
   done: colors.success,
   failed: colors.error,
+};
+
+const MESSAGE_COLOR: Record<"secondary" | "success" | "warning" | "error", string> = {
+  secondary: colors.textSecondary,
+  success: colors.success,
+  warning: colors.warning,
+  error: colors.error,
 };
 
 const MIN_TERM_COLS = 40;
@@ -53,19 +53,22 @@ const HORIZONTAL_CHROME = STEPS_PANE_WIDTH + 2 + 1 + 2;
 // strip + hint bar.
 const VERTICAL_CHROME = 8;
 
-// ANSI 256-color 114 is a muted spring-green, matching the accent family
-// without competing with the agent's own colored output.
-function stepSeparator(stepIndex: number, stepName: string): string {
-  return `\r\n\x1b[2;38;5;114m── step ${stepIndex + 1}: ${stepName} ──\x1b[0m\r\n`;
-}
-
+/**
+ * Runs a flow (or attaches to one already running) and shows its live PTY
+ * output. The run itself is owned by runManager, not this component — pass
+ * `runId` to attach to an existing run (in progress or just finished) or
+ * `params` to start a fresh one. Leaving this screen (Escape) never kills
+ * the underlying run; only the explicit "c" cancel key does.
+ */
 export function RunScreen({
   flowId,
+  runId: initialRunId,
   params,
   onExit,
 }: {
   flowId: string;
-  params: Record<string, string>;
+  runId?: string;
+  params?: Record<string, string>;
   onExit: () => void;
 }) {
   const flow: Flow | undefined = useMemo(() => getFlow(flowId), [flowId]);
@@ -74,124 +77,70 @@ export function RunScreen({
   const termCols = Math.max(MIN_TERM_COLS, width - HORIZONTAL_CHROME);
   const termRows = Math.max(MIN_TERM_ROWS, height - VERTICAL_CHROME);
 
-  const [statuses, setStatuses] = useState<StepStatus[]>(() => (flow ? flow.steps.map(() => "pending") : []));
-  const [attempts, setAttempts] = useState<number[]>(() => (flow ? flow.steps.map(() => 1) : []));
-  const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null);
-  const [flowStatus, setFlowStatus] = useState<"running" | "complete" | "failed">("running");
-  const [finalError, setFinalError] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(initialRunId ?? null);
   const [attachedUi, setAttachedUi] = useState(false);
+  const [, forceUpdate] = useReducer((n) => n + 1, 0);
 
-  const handleRef = useRef<RunHandle | null>(null);
   const termRef = useRef<GhosttyTerminalRenderable | null>(null);
+  // How many of the run's feedLog chunks have already been fed to the
+  // *current* terminal instance — lets us both replay history on first
+  // attach and stream only new chunks afterwards, without re-feeding.
+  const fedCountRef = useRef(0);
+  const seenRunIdRef = useRef<string | null>(null);
 
-  function handleEvent(e: RunEvent) {
-    switch (e.type) {
-      case "flow-start":
-        break;
-      case "step-start":
-        setStatuses((prev) => {
-          const next = [...prev];
-          next[e.stepIndex] = "running";
-          return next;
-        });
-        setAttempts((prev) => {
-          const next = [...prev];
-          next[e.stepIndex] = e.attempt;
-          return next;
-        });
-        if (e.attempt === 1) {
-          termRef.current?.feed(stepSeparator(e.stepIndex, e.stepName));
-        }
-        break;
-      case "agent-output":
-        termRef.current?.feed(e.chunk);
-        break;
-      case "step-output-complete":
-        break;
-      case "validation-start":
-        setStatuses((prev) => {
-          const next = [...prev];
-          next[e.stepIndex] = "validating";
-          return next;
-        });
-        setStatusMessage({ text: "validating output...", color: colors.textSecondary });
-        break;
-      case "validation-result":
-        if (e.verdict.passed) {
-          setStatusMessage({ text: "validation passed", color: colors.success });
-        } else {
-          setStatusMessage({ text: `validation failed: ${e.verdict.feedback}`, color: colors.error });
-        }
-        break;
-      case "step-retry":
-        setStatuses((prev) => {
-          const next = [...prev];
-          next[e.stepIndex] = "retrying";
-          return next;
-        });
-        setStatusMessage({ text: `retrying (attempt ${e.attempt}): ${e.feedback}`, color: colors.warning });
-        break;
-      case "step-complete":
-        setStatuses((prev) => {
-          const next = [...prev];
-          next[e.stepIndex] = "done";
-          return next;
-        });
-        break;
-      case "step-failed":
-        setStatuses((prev) => {
-          const next = [...prev];
-          next[e.stepIndex] = "failed";
-          return next;
-        });
-        setStatusMessage({ text: `step ${e.stepIndex + 1} failed: ${e.error}`, color: colors.error });
-        break;
-      case "session-note":
-        setStatusMessage({ text: e.note, color: colors.warning });
-        termRef.current?.feed(`\r\n\x1b[2m[note] ${e.note}\x1b[0m\r\n`);
-        break;
-      case "flow-complete":
-        setFlowStatus("complete");
-        detach();
-        break;
-      case "flow-failed":
-        setFlowStatus("failed");
-        setFinalError(e.error);
-        setStatusMessage({ text: `flow failed: ${e.error}`, color: colors.error });
-        detach();
-        break;
-    }
+  // Start a fresh run if we weren't handed an existing one to attach to.
+  useEffect(() => {
+    if (!flow || runId || !params) return;
+    setRunId(startRun(flow, params, { cols: termCols, rows: termRows }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow]);
+
+  useEffect(() => {
+    if (!runId) return;
+    return subscribeRun(runId, forceUpdate);
+  }, [runId]);
+
+  const run = runId ? getActiveRun(runId) : undefined;
+
+  // New run instance (fresh start or re-run) — reset the terminal and feed
+  // bookkeeping so replay starts from that run's beginning, not wherever the
+  // previous one left off.
+  if (seenRunIdRef.current !== runId) {
+    seenRunIdRef.current = runId;
+    fedCountRef.current = 0;
+    termRef.current?.reset();
   }
+
+  // Replay any feedLog chunks not yet fed to this terminal instance. Runs
+  // after every render (cheap no-op once caught up) rather than gating on a
+  // dependency array, since new chunks arrive via runManager's subscription
+  // rather than through props.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!run || !term) return;
+    for (let i = fedCountRef.current; i < run.feedLog.length; i++) term.feed(run.feedLog[i]!);
+    fedCountRef.current = run.feedLog.length;
+  });
+
+  useEffect(() => {
+    run?.handle.resize(termCols, termRows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [termCols, termRows, runId]);
+
+  useEffect(() => {
+    return () => setAttached(false);
+  }, []);
 
   function detach() {
     setAttachedUi(false);
     setAttached(false);
   }
 
-  function start() {
-    if (!flow) return;
-    termRef.current?.reset();
-    setStatuses(flow.steps.map(() => "pending"));
-    setAttempts(flow.steps.map(() => 1));
-    setStatusMessage(null);
-    setFlowStatus("running");
-    setFinalError(null);
+  function rerun() {
+    if (!flow || !run) return;
     detach();
-    handleRef.current = runFlow(flow, params, handleEvent, { cols: termCols, rows: termRows });
+    setRunId(startRun(flow, run.params, { cols: termCols, rows: termRows }));
   }
-
-  useEffect(() => {
-    start();
-    return () => {
-      handleRef.current?.cancel();
-      setAttached(false);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flow]);
-
-  useEffect(() => {
-    handleRef.current?.resize(termCols, termRows);
-  }, [termCols, termRows]);
 
   useKeyboard((key) => {
     if (attachedUi) {
@@ -201,19 +150,24 @@ export function RunScreen({
         detach();
         return;
       }
-      handleRef.current?.write(key.raw || key.sequence);
+      run?.handle.write(key.raw || key.sequence);
       return;
     }
 
     if (key.name === "escape") {
-      handleRef.current?.cancel();
+      // Deliberately does NOT cancel the run — it keeps going in the
+      // background and can be re-attached from the flow list or history.
       onExit();
       return;
     }
-    if (flowStatus === "running") {
+    if (run?.status === "running") {
       if (key.name === "a" && !key.ctrl && !key.meta) {
         setAttachedUi(true);
         setAttached(true);
+        return;
+      }
+      if (key.name === "c" && !key.ctrl && !key.meta) {
+        if (runId) cancelRun(runId);
         return;
       }
       return;
@@ -223,7 +177,7 @@ export function RunScreen({
       return;
     }
     if (key.name === "r" && !key.ctrl && !key.meta) {
-      start();
+      rerun();
       return;
     }
   });
@@ -231,7 +185,7 @@ export function RunScreen({
   usePaste((event) => {
     if (!attachedUi) return;
     const text = decodePasteBytes(event.bytes);
-    handleRef.current?.write(text);
+    run?.handle.write(text);
   });
 
   if (!flow) {
@@ -243,10 +197,20 @@ export function RunScreen({
     );
   }
 
+  if (!run) {
+    return (
+      <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg} padding={2}>
+        <text fg={colors.textSecondary}>Starting "{flow.name}"...</text>
+      </box>
+    );
+  }
+
+  const displayFlow = run.flow;
+
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
       <box paddingLeft={1} paddingTop={1}>
-        <text fg={colors.accent}>Running: {flow.name}</text>
+        <text fg={colors.accent}>Running: {displayFlow.name}</text>
       </box>
       <box flexDirection="row" flexGrow={1} margin={1} gap={1}>
         <box
@@ -258,9 +222,9 @@ export function RunScreen({
           padding={1}
           width={STEPS_PANE_WIDTH}
         >
-          {flow.steps.map((step, i) => {
-            const status = statuses[i] ?? "pending";
-            const attempt = attempts[i] ?? 1;
+          {displayFlow.steps.map((step, i) => {
+            const status = run.stepStatuses[i] ?? "pending";
+            const attempt = run.attempts[i] ?? 1;
             const running = status === "running" || status === "validating" || status === "retrying";
             const bg = running ? colors.selectionBg : undefined;
             const fg = running ? colors.selectionFg : STATUS_COLOR[status];
@@ -287,32 +251,38 @@ export function RunScreen({
           <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} flexGrow={1} />
         </box>
       </box>
-      {statusMessage && (
+      {run.statusMessage && (
         <box paddingLeft={1}>
-          <text fg={statusMessage.color}>{statusMessage.text}</text>
+          <text fg={MESSAGE_COLOR[run.statusMessage.kind]}>{run.statusMessage.text}</text>
         </box>
       )}
-      {flowStatus === "complete" && (
+      {run.status === "complete" && (
         <box paddingLeft={1}>
           <text fg={colors.success}>✓ Flow complete</text>
         </box>
       )}
-      {flowStatus === "failed" && (
+      {run.status === "failed" && (
         <box paddingLeft={1}>
-          <text fg={colors.error}>✗ Flow failed{finalError ? `: ${finalError}` : ""}</text>
+          <text fg={colors.error}>✗ Flow failed{run.finalError ? `: ${run.finalError}` : ""}</text>
         </box>
       )}
-      <Hint hints={runScreenHints(attachedUi, flowStatus)} />
+      {run.status === "cancelled" && (
+        <box paddingLeft={1}>
+          <text fg={colors.warning}>⊘ Flow cancelled</text>
+        </box>
+      )}
+      <Hint hints={runScreenHints(attachedUi, run.status)} />
     </box>
   );
 }
 
-function runScreenHints(attachedUi: boolean, flowStatus: "running" | "complete" | "failed"): KeyHintSpec[] {
+function runScreenHints(attachedUi: boolean, status: "running" | "complete" | "failed" | "cancelled"): KeyHintSpec[] {
   if (attachedUi) return [{ keys: "ctrl+]", label: "detach · keys go to agent" }];
-  if (flowStatus === "running") {
+  if (status === "running") {
     return [
       { keys: "a", label: "attach" },
-      { keys: "esc", label: "cancel" },
+      { keys: "c", label: "cancel" },
+      { keys: "esc", label: "back (keeps running)" },
     ];
   }
   return [
