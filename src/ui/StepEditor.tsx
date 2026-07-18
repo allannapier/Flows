@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import type { TabSelectOption, TextareaRenderable } from "@opentui/core";
 import { AGENTS, agentAvailable, agentSupportsContinuation } from "../core/agents";
+import { LAUNCH_DIR } from "../core/paths";
 import type { FlowParameter, FlowStep } from "../types";
 import {
   colors,
@@ -594,7 +595,7 @@ export function StepEditor({
           onInput={setFieldDraft}
           onSubmit={commitField}
           value={draft.workingDir ?? ""}
-          placeholder="(cwd)"
+          placeholder={`(defaults to where flow was started: ${LAUNCH_DIR})`}
         />
 
         <ButtonRow

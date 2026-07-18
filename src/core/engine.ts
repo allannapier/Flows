@@ -6,6 +6,7 @@
 import { ptyToText } from "ghostty-opentui";
 import type { Flow, RunEvent, RunHandle, RunOptions } from "../types";
 import { AGENTS, agentSupportsContinuation, buildAgentCommand } from "./agents";
+import { resolveWorkingDir } from "./paths";
 import { AgentSession } from "./session";
 import { renderTemplate } from "./template";
 import { validateOutput } from "./validator";
@@ -16,8 +17,37 @@ const RETRY_CONTEXT_TEMPLATE = (feedback: string) =>
   `Validator feedback: ${feedback}\n` +
   `Please address the feedback and try again.`;
 
+const NEEDS_INPUT_CONTEXT_TEMPLATE = (question: string, answer: string) =>
+  `\n\n--- FOLLOW-UP ---\n` +
+  `On a previous attempt you asked instead of proceeding:\n"${question}"\n` +
+  `The user's answer: ${answer}\n` +
+  `Continue the task using this answer. Do not ask again.`;
+
+const WORKING_DIR_NOTE = (dir: string) =>
+  `Your working directory for this task is: ${dir}\n` +
+  `Read, write, and build files relative to this directory unless told otherwise. ` +
+  `Do not ask for confirmation of the working directory — proceed using it.\n\n`;
+
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
+
+// Heuristic: a step's output "looks like a question" (the agent stalled out
+// asking the user something instead of doing the work) when its last
+// non-empty line ends in "?" and the whole output is short — genuine
+// completed work is virtually always longer than a one- or two-line
+// question. This can't be perfect (agents in single-shot "-p" mode exit
+// after answering, so there's no live process left to actually detect a
+// stall on) but catches the common case cheaply, without an extra LLM call
+// on every step.
+const NEEDS_INPUT_MAX_LENGTH = 500;
+
+function looksLikeClarifyingQuestion(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > NEEDS_INPUT_MAX_LENGTH) return false;
+  const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lastLine = lines[lines.length - 1] ?? "";
+  return lastLine.endsWith("?");
+}
 
 // Matches CSI sequences (ESC [ ... final byte) used as a fallback cleaner
 // when ptyToText itself throws on malformed input.
@@ -48,6 +78,7 @@ export function runFlow(
   let currentSession: AgentSession | null = null;
   let liveCols = options?.cols ?? DEFAULT_COLS;
   let liveRows = options?.rows ?? DEFAULT_ROWS;
+  let pendingAnswer: ((answer: string) => void) | null = null;
 
   function emitCancelledIfNeeded(): boolean {
     if (cancelled && !cancelledEmitted) {
@@ -55,6 +86,14 @@ export function runFlow(
       onEvent({ type: "flow-failed", error: "Cancelled by user" });
     }
     return cancelled;
+  }
+
+  /** Pauses the run loop until the UI supplies an answer via
+   * RunHandle.answerInput (or cancel() unblocks it with ""). */
+  function waitForAnswer(): Promise<string> {
+    return new Promise<string>((resolve) => {
+      pendingAnswer = resolve;
+    });
   }
 
   async function execute(): Promise<void> {
@@ -93,7 +132,7 @@ export function runFlow(
       }
 
       const step = flow.steps[stepIndex];
-      const resolvedCwd = step.workingDir || process.cwd();
+      const resolvedCwd = resolveWorkingDir(step.workingDir);
       const sessionKey = `${step.agent}::${resolvedCwd}`;
 
       if (step.continueSession && !agentSupportsContinuation(step.agent)) {
@@ -107,7 +146,12 @@ export function runFlow(
 
       let basePrompt: string;
       try {
-        basePrompt = renderTemplate(step.prompt, params, stepOutputs);
+        const rendered = renderTemplate(step.prompt, params, stepOutputs);
+        // Custom commands get the rendered prompt verbatim via $FLOW_PROMPT —
+        // the user owns how it's parsed, so we don't decorate it. The
+        // built-in agents get an explicit heads-up about their working
+        // directory so they don't have to guess (or ask) where to build.
+        basePrompt = step.agent === "custom" ? rendered : WORKING_DIR_NOTE(resolvedCwd) + rendered;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         onEvent({ type: "step-failed", stepIndex, error: message });
@@ -198,6 +242,27 @@ export function runFlow(
           return;
         }
 
+        if (looksLikeClarifyingQuestion(stepText)) {
+          if (attempt >= maxAttempts) {
+            const message = `Agent asked a question instead of completing the step, and no retries remain: "${stepText.trim()}"`;
+            onEvent({ type: "step-failed", stepIndex, error: message });
+            onEvent({ type: "flow-failed", error: message });
+            return;
+          }
+          onEvent({ type: "step-needs-input", stepIndex, question: stepText.trim() });
+          const answer = await waitForAnswer();
+          pendingAnswer = null;
+          if (cancelled) {
+            emitCancelledIfNeeded();
+            return;
+          }
+          const feedback = `Answered: ${answer}`;
+          onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback });
+          retryFeedback = undefined;
+          basePrompt = basePrompt + NEEDS_INPUT_CONTEXT_TEMPLATE(stepText.trim(), answer);
+          continue;
+        }
+
         if (step.validate) {
           onEvent({ type: "validation-start", stepIndex });
           let verdict;
@@ -271,6 +336,11 @@ export function runFlow(
       if (currentSession) {
         currentSession.kill();
       }
+      if (pendingAnswer) {
+        const resolve = pendingAnswer;
+        pendingAnswer = null;
+        resolve("");
+      }
     },
     resize(cols: number, rows: number): void {
       liveCols = Math.max(2, cols);
@@ -282,6 +352,13 @@ export function runFlow(
     write(data: string): void {
       if (currentSession) {
         currentSession.write(data);
+      }
+    },
+    answerInput(text: string): void {
+      if (pendingAnswer) {
+        const resolve = pendingAnswer;
+        pendingAnswer = null;
+        resolve(text);
       }
     },
   };

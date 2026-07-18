@@ -7,6 +7,7 @@
 
 import assert from "node:assert";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { Flow, FlowStep, RunEvent } from "../types";
 import { deleteFlow, getFlow, listFlows, newFlowId, saveFlow } from "./storage";
@@ -277,6 +278,62 @@ async function testEngineWrite(): Promise<void> {
   console.log("engine write (attach interactivity): OK");
 }
 
+async function testEngineNeedsInput(): Promise<void> {
+  // A step whose command asks a short question the first time it runs, then
+  // succeeds once answered — exercising the "step-needs-input" pause/resume
+  // path (engine.ts's looksLikeClarifyingQuestion + RunHandle.answerInput),
+  // which stands in for an agent CLI that exits after asking rather than
+  // blocking on stdin (see session/engine changes for why that can't be
+  // "attached" to after the fact).
+  const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "flows-needs-input-")), "asked");
+  const flow: Flow = {
+    id: newFlowId(),
+    name: "Needs Input Flow",
+    description: "One-step flow exercising step-needs-input.",
+    parameters: [],
+    steps: [
+      {
+        id: "step-1",
+        name: "ask-then-build",
+        agent: "custom",
+        customCommand: `test -f ${marker} && echo done || { touch ${marker}; echo "should I build this here?"; }`,
+        prompt: "unused",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 1,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+
+  const events: RunEvent[] = [];
+  const handle = runFlow(flow, {}, (e) => events.push(e));
+
+  const deadline = Date.now() + 5000;
+  while (!events.some((e) => e.type === "step-needs-input") && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const needsInput = events.find((e) => e.type === "step-needs-input");
+  assert.ok(needsInput && needsInput.type === "step-needs-input", "expected a step-needs-input event");
+  if (needsInput && needsInput.type === "step-needs-input") {
+    assert.ok(needsInput.question.includes("should I build this here?"), `unexpected question: ${needsInput.question}`);
+  }
+  assert.ok(!events.some((e) => e.type === "step-complete"), "step should not have completed before being answered");
+
+  handle.answerInput("yes, use the current directory");
+  await handle.done;
+
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes("step-complete"), `expected step-complete, got: ${types.join(",")}`);
+  assert.equal(types.filter((t) => t === "step-needs-input").length, 1, "expected exactly one needs-input pause");
+
+  const stepComplete = events.find((e) => e.type === "step-complete");
+  assert.ok(stepComplete && stepComplete.type === "step-complete" && stepComplete.output.includes("done"));
+
+  console.log("engine needs-input (answer resumes the step): OK");
+}
+
 function testConfig(): void {
   const home = process.env.FLOWS_HOME!;
   const configFile = path.join(home, "config.json");
@@ -374,6 +431,7 @@ async function main(): Promise<void> {
   testBuildAgentCommand();
   await testEngineContinuation();
   await testEngineWrite();
+  await testEngineNeedsInput();
   testConfig();
   testResolveValidator();
   testMaskKey();

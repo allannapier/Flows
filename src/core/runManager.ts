@@ -21,7 +21,7 @@ function stepSeparator(stepIndex: number, stepName: string): string {
   return `\r\n\x1b[2;38;5;114m── step ${stepIndex + 1}: ${stepName} ──\x1b[0m\r\n`;
 }
 
-export type StepUiStatus = "pending" | "running" | "validating" | "retrying" | "done" | "failed";
+export type StepUiStatus = "pending" | "running" | "validating" | "retrying" | "needs-input" | "done" | "failed";
 
 export interface RunStatusMessage {
   text: string;
@@ -38,6 +38,9 @@ export interface ActiveRun {
   stepStatuses: StepUiStatus[];
   attempts: number[];
   statusMessage: RunStatusMessage | null;
+  /** Set while a step is paused on "step-needs-input"; cleared as soon as
+   * the run moves past that pause (retry, completion, or failure). */
+  pendingQuestion: { stepIndex: number; question: string } | null;
   finalError: string | null;
   /** Raw chunks fed to the agent's PTY output, in order — replayed into a
    * freshly-mounted terminal when a screen (re)attaches to this run. */
@@ -103,6 +106,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
     stepStatuses: flow.steps.map(() => "pending"),
     attempts: flow.steps.map(() => 1),
     statusMessage: null,
+    pendingQuestion: null,
     finalError: null,
     feedLog: [],
     startedAt: new Date().toISOString(),
@@ -139,6 +143,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
         case "step-start":
           run.stepStatuses[e.stepIndex] = "running";
           run.attempts[e.stepIndex] = e.attempt;
+          run.pendingQuestion = null;
           if (e.attempt === 1) {
             run.feedLog.push(stepSeparator(e.stepIndex, e.stepName));
           }
@@ -160,10 +165,17 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           break;
         case "step-retry":
           run.stepStatuses[e.stepIndex] = "retrying";
+          run.pendingQuestion = null;
           run.statusMessage = { text: `retrying (attempt ${e.attempt}): ${e.feedback}`, kind: "warning" };
+          break;
+        case "step-needs-input":
+          run.stepStatuses[e.stepIndex] = "needs-input";
+          run.pendingQuestion = { stepIndex: e.stepIndex, question: e.question };
+          run.statusMessage = { text: "agent is waiting on a question — answer below", kind: "warning" };
           break;
         case "step-complete": {
           run.stepStatuses[e.stepIndex] = "done";
+          run.pendingQuestion = null;
           const rec = stepRecords[e.stepIndex];
           if (rec) {
             rec.status = "done";
@@ -174,6 +186,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
         }
         case "step-failed": {
           run.stepStatuses[e.stepIndex] = "failed";
+          run.pendingQuestion = null;
           run.statusMessage = { text: `step ${e.stepIndex + 1} failed: ${e.error}`, kind: "error" };
           const rec = stepRecords[e.stepIndex];
           if (rec) {
@@ -209,4 +222,9 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
 
 export function cancelRun(runId: string): void {
   active.get(runId)?.handle.cancel();
+}
+
+/** Answers a run's pending "needs-input" pause, if any (no-op otherwise). */
+export function answerRun(runId: string, text: string): void {
+  active.get(runId)?.handle.answerInput(text);
 }

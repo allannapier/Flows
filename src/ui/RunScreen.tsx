@@ -2,8 +2,9 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { extend, useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
 import { decodePasteBytes } from "@opentui/core";
 import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
+import { resolveWorkingDir } from "../core/paths";
 import { getFlow } from "../core/storage";
-import { cancelRun, getActiveRun, startRun, subscribeRun, type StepUiStatus } from "../core/runManager";
+import { answerRun, cancelRun, getActiveRun, startRun, subscribeRun, type StepUiStatus } from "../core/runManager";
 import type { Flow } from "../types";
 import { colors, Hint, type KeyHintSpec } from "./theme";
 import { setAttached } from "./attach-state";
@@ -23,6 +24,7 @@ const STATUS_SYMBOL: Record<StepUiStatus, string> = {
   running: "▶",
   validating: "◐",
   retrying: "↻",
+  "needs-input": "?",
   done: "✓",
   failed: "✗",
 };
@@ -32,6 +34,7 @@ const STATUS_COLOR: Record<StepUiStatus, string> = {
   running: colors.accent,
   validating: colors.accent,
   retrying: colors.warning,
+  "needs-input": colors.warning,
   done: colors.success,
   failed: colors.error,
 };
@@ -42,6 +45,12 @@ const MESSAGE_COLOR: Record<"secondary" | "success" | "warning" | "error", strin
   warning: colors.warning,
   error: colors.error,
 };
+
+/** Keeps the tail of a path (the informative end) when it's too long for a
+ * narrow pane, rather than truncating from the front like previewLine does. */
+function truncatePath(path: string, max: number): string {
+  return path.length > max ? `…${path.slice(-(max - 1))}` : path;
+}
 
 const MIN_TERM_COLS = 40;
 const MIN_TERM_ROWS = 10;
@@ -79,6 +88,7 @@ export function RunScreen({
 
   const [runId, setRunId] = useState<string | null>(initialRunId ?? null);
   const [attachedUi, setAttachedUi] = useState(false);
+  const [answerDraft, setAnswerDraft] = useState("");
   const [, forceUpdate] = useReducer((n) => n + 1, 0);
 
   const termRef = useRef<GhosttyTerminalRenderable | null>(null);
@@ -101,6 +111,25 @@ export function RunScreen({
   }, [runId]);
 
   const run = runId ? getActiveRun(runId) : undefined;
+  // A pending question takes priority over attach — there's no live PTY to
+  // attach to by the time a step pauses on one (the agent already exited
+  // after asking; see engine.ts's looksLikeClarifyingQuestion).
+  const answering = !attachedUi && !!run?.pendingQuestion;
+
+  // Clear any half-typed answer once the pause it belonged to is gone
+  // (answered, step moved on, or a different step is now asking).
+  const pendingQuestionKey = run?.pendingQuestion ? `${run.pendingQuestion.stepIndex}` : null;
+  const lastPendingKeyRef = useRef<string | null>(null);
+  if (lastPendingKeyRef.current !== pendingQuestionKey) {
+    lastPendingKeyRef.current = pendingQuestionKey;
+    if (answerDraft !== "") setAnswerDraft("");
+  }
+
+  function submitAnswer() {
+    if (!runId || !answerDraft.trim()) return;
+    answerRun(runId, answerDraft.trim());
+    setAnswerDraft("");
+  }
 
   // New run instance (fresh start or re-run) — reset the terminal and feed
   // bookkeeping so replay starts from that run's beginning, not wherever the
@@ -158,6 +187,12 @@ export function RunScreen({
       // Deliberately does NOT cancel the run — it keeps going in the
       // background and can be re-attached from the flow list or history.
       onExit();
+      return;
+    }
+    if (answering) {
+      // Every other key is handled by the focused <input> below (see
+      // FieldRow's identical pattern in theme.tsx) — it manages its own
+      // text buffer and calls submitAnswer() via onSubmit.
       return;
     }
     if (run?.status === "running") {
@@ -229,13 +264,19 @@ export function RunScreen({
             const bg = running ? colors.selectionBg : undefined;
             const fg = running ? colors.selectionFg : STATUS_COLOR[status];
             return (
-              <box key={step.id} flexDirection="row" backgroundColor={bg}>
+              <box key={step.id} flexDirection="column" backgroundColor={bg}>
                 <text fg={fg} bg={bg}>
                   {/* status symbol doubles as the marker; the bar shows selection */}
                   {" "}
                   {STATUS_SYMBOL[status]} {step.name}
                   {attempt > 1 ? ` (x${attempt})` : ""}
                 </text>
+                {running && (
+                  <text fg={colors.textSecondary} bg={bg}>
+                    {"   "}
+                    {truncatePath(resolveWorkingDir(step.workingDir), STEPS_PANE_WIDTH - 5)}
+                  </text>
+                )}
               </box>
             );
           })}
@@ -251,7 +292,23 @@ export function RunScreen({
           <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} flexGrow={1} />
         </box>
       </box>
-      {run.statusMessage && (
+      {run.pendingQuestion && (
+        <box flexDirection="column" border borderStyle="rounded" borderColor={colors.warning} margin={1} marginTop={0} padding={1}>
+          <text fg={colors.warning}>? {run.flow.steps[run.pendingQuestion.stepIndex]?.name ?? "step"} is waiting on you:</text>
+          <text fg={colors.textPrimary}>{run.pendingQuestion.question}</text>
+          <box flexDirection="row">
+            <text fg={colors.textSecondary}>{"> "}</text>
+            <input
+              flexGrow={1}
+              focused={answering}
+              value={answerDraft}
+              onInput={setAnswerDraft}
+              onSubmit={submitAnswer}
+            />
+          </box>
+        </box>
+      )}
+      {run.statusMessage && !run.pendingQuestion && (
         <box paddingLeft={1}>
           <text fg={MESSAGE_COLOR[run.statusMessage.kind]}>{run.statusMessage.text}</text>
         </box>
@@ -271,13 +328,18 @@ export function RunScreen({
           <text fg={colors.warning}>⊘ Flow cancelled</text>
         </box>
       )}
-      <Hint hints={runScreenHints(attachedUi, run.status)} />
+      <Hint hints={runScreenHints(attachedUi, answering, run.status)} />
     </box>
   );
 }
 
-function runScreenHints(attachedUi: boolean, status: "running" | "complete" | "failed" | "cancelled"): KeyHintSpec[] {
+function runScreenHints(
+  attachedUi: boolean,
+  answering: boolean,
+  status: "running" | "complete" | "failed" | "cancelled",
+): KeyHintSpec[] {
   if (attachedUi) return [{ keys: "ctrl+]", label: "detach · keys go to agent" }];
+  if (answering) return [{ keys: "⏎", label: "send answer" }, { keys: "esc", label: "back (keeps waiting)" }];
   if (status === "running") {
     return [
       { keys: "a", label: "attach" },

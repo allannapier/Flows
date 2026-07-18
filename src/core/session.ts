@@ -19,6 +19,31 @@ function clampSize(n: number): number {
   return Math.max(2, Math.floor(n));
 }
 
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Wraps `cmd` so it runs inside the user's own login/interactive shell,
+ * explicitly `cd`ing into `cwd` before exec'ing the agent — rather than
+ * relying solely on the PTY's own cwd option (which chdir()s the spawned
+ * process directly, bypassing the shell entirely). Going through a real
+ * shell means directory-triggered hooks a normal terminal would run (direnv,
+ * nvm/asdf per-project version switching, shell aliases/functions) actually
+ * fire before the agent starts, matching what happens when a person opens a
+ * terminal, cd's into a project, and runs the agent by hand.
+ */
+function buildShellCommand(cmd: string[], cwd: string): string[] {
+  const shellPath = process.env.SHELL || "/bin/bash";
+  const shellName = shellPath.split("/").pop() ?? "";
+  // fish has no -i/-l flags in the bash sense and always sources config.fish;
+  // every other common shell (bash, zsh) gets -i so ~/.bashrc / ~/.zshrc
+  // (where most directory-sensitive hooks live) actually run.
+  const flags = shellName === "fish" ? ["-c"] : ["-ic"];
+  const script = `cd -- ${shQuote(cwd)} && exec ${cmd.map(shQuote).join(" ")}`;
+  return [shellPath, ...flags, script];
+}
+
 export class AgentSession {
   private readonly pty: IPty;
   private _raw = "";
@@ -29,7 +54,7 @@ export class AgentSession {
   readonly exited: Promise<number>;
 
   constructor(opts: SessionOptions) {
-    const [file, ...args] = opts.cmd;
+    const [file, ...args] = buildShellCommand(opts.cmd, opts.cwd);
     if (!file) {
       throw new Error("AgentSession requires a non-empty cmd");
     }

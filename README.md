@@ -107,6 +107,37 @@ rebuilds it.
   detaches. `ctrl+c` quits Flows everywhere except while attached, where it's
   sent to the agent instead.
 
+### Working directory
+
+A step's working directory defaults to wherever `flow` was launched from (not
+necessarily Flows' own install directory) — set per-step to override. That
+default is captured once at startup (`src/core/paths.ts`) and shown as the
+placeholder on the "Working directory" field in the step editor, so it's
+never a silent guess.
+
+Each step is run inside the user's own login shell (`$SHELL -ic 'cd -- <dir>
+&& exec <agent command>'`), not `execve`'d directly — so directory-triggered
+shell hooks a real terminal would run (direnv, nvm/asdf per-project version
+switching, aliases) fire before the agent starts. The rendered prompt also
+tells built-in agents their working directory explicitly, so they don't have
+to guess (or ask) where to build.
+
+### When an agent asks instead of acting
+
+Agents invoked in single-shot/print mode (e.g. `claude -p`) can't actually
+pause mid-task to ask a question — if the prompt is ambiguous, the CLI just
+answers with the question as its final output and exits. By the time you'd
+notice and attach, the process is already gone, so there's nothing left to
+type into.
+
+Flows detects this: when a step's output looks like a stalled question
+(short output, last line ends in "?") instead of completed work, the run
+pauses with a **"? waiting on you"** step status and an inline answer box in
+the run screen. Type a reply and press enter — it's fed back to the agent as
+follow-up context and the step retries (consuming one of its retry
+attempts), instead of the run silently failing or completing with a question
+as its output.
+
 ### Prompt templates
 
 Step prompts support placeholders:
@@ -128,10 +159,11 @@ src/core/
   storage.ts         JSON persistence in $FLOWS_HOME/flows
   config.ts          validator LLM config persistence ($FLOWS_HOME/config.json) + resolution
   agents.ts          agent registry + command builders
-  session.ts         PTY-backed agent sessions (bun-pty)
+  paths.ts           launch directory (default working dir) capture/resolution
+  session.ts         PTY-backed agent sessions (bun-pty), shell-wrapped with an explicit cd
   template.ts        {{...}} interpolation
   validator.ts       multi-provider structured-output validation (Anthropic/OpenAI/Google/custom)
-  engine.ts          sequential run loop, streaming, retries, cancellation
+  engine.ts          sequential run loop, streaming, retries, cancellation, needs-input pausing
 src/ui/
   App.tsx            screen router
   FlowList.tsx       main menu
@@ -144,5 +176,5 @@ src/ui/
 ```
 
 The engine emits typed `RunEvent`s (step-start, agent-output, validation-result,
-step-retry, flow-complete, ...) that the run screen renders live; the UI and core
-share only `src/types.ts`.
+step-retry, step-needs-input, flow-complete, ...) that the run screen renders live;
+the UI and core share only `src/types.ts`.

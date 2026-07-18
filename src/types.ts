@@ -85,6 +85,11 @@ export type RunEvent =
   | { type: "step-complete"; stepIndex: number; output: string }
   | { type: "step-failed"; stepIndex: number; error: string }
   | { type: "session-note"; stepIndex: number; note: string }
+  /** The agent's output for this attempt looks like a stalled clarifying
+   * question rather than completed work (see engine.ts's
+   * looksLikeClarifyingQuestion) — the run is paused until the UI calls
+   * RunHandle.answerInput() with the user's reply. */
+  | { type: "step-needs-input"; stepIndex: number; question: string }
   | { type: "flow-complete" }
   | { type: "flow-failed"; error: string };
 
@@ -97,6 +102,8 @@ export interface RunHandle {
   resize(cols: number, rows: number): void;
   /** Write raw bytes to the PTY of the currently running step (no-op when idle). */
   write(data: string): void;
+  /** Answer a pending "step-needs-input" pause (no-op if nothing is pending). */
+  answerInput(text: string): void;
 }
 
 /** Optional terminal size hints for runFlow; defaults to 120x30. */
