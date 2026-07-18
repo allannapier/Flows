@@ -6,10 +6,11 @@
 // Exits 0 and prints OK on success; throws (non-zero exit) on failure.
 
 import assert from "node:assert";
-import type { Flow, RunEvent } from "../types";
+import type { Flow, FlowStep, RunEvent } from "../types";
 import { deleteFlow, getFlow, listFlows, newFlowId, saveFlow } from "./storage";
 import { renderTemplate } from "./template";
 import { runFlow } from "./engine";
+import { buildAgentCommand } from "./agents";
 
 async function testStorage(): Promise<void> {
   const id = newFlowId();
@@ -115,6 +116,105 @@ async function testEngine(): Promise<void> {
   console.log("engine: OK");
 }
 
+function baseStep(overrides: Partial<FlowStep>): FlowStep {
+  return {
+    id: "s",
+    name: "s",
+    agent: "claude",
+    prompt: "p",
+    expectedResult: "N/A",
+    validate: false,
+    maxRetries: 0,
+    ...overrides,
+  };
+}
+
+function testBuildAgentCommand(): void {
+  const claudeContinue = buildAgentCommand(baseStep({ agent: "claude" }), "hi", true);
+  assert.ok(
+    claudeContinue.cmd.includes("--continue"),
+    `expected claude+continue to include --continue, got: ${JSON.stringify(claudeContinue.cmd)}`,
+  );
+
+  const codexContinue = buildAgentCommand(baseStep({ agent: "codex" }), "hi", true);
+  assert.deepEqual(codexContinue.cmd, ["codex", "exec", "resume", "--last", "hi"]);
+
+  const codexFresh = buildAgentCommand(baseStep({ agent: "codex" }), "hi", false);
+  assert.deepEqual(codexFresh.cmd, ["codex", "exec", "hi"]);
+
+  const geminiContinue = buildAgentCommand(baseStep({ agent: "gemini" }), "hi", true);
+  assert.ok(
+    !geminiContinue.cmd.some((s) => s.includes("continue") || s.includes("resume")),
+    `expected gemini+continue to contain no resume flags, got: ${JSON.stringify(geminiContinue.cmd)}`,
+  );
+
+  console.log("buildAgentCommand: OK");
+}
+
+async function testEngineContinuation(): Promise<void> {
+  const flow: Flow = {
+    id: newFlowId(),
+    name: "Continuation Flow",
+    description: "Three-step flow exercising $FLOW_CONTINUE plumbing.",
+    parameters: [],
+    steps: [
+      {
+        id: "step-1",
+        name: "first",
+        agent: "custom",
+        customCommand: 'echo "cont=$FLOW_CONTINUE"',
+        prompt: "a",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+        continueSession: true,
+      },
+      {
+        id: "step-2",
+        name: "second",
+        agent: "custom",
+        customCommand: 'echo "cont=$FLOW_CONTINUE"',
+        prompt: "b",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+        continueSession: true,
+      },
+      {
+        id: "step-3",
+        name: "third",
+        agent: "custom",
+        customCommand: 'echo "cont=$FLOW_CONTINUE"',
+        prompt: "c",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+
+  const events: RunEvent[] = [];
+  const handle = runFlow(flow, {}, (e) => events.push(e));
+  await handle.done;
+
+  assert.ok(
+    !events.some((e) => e.type === "flow-failed"),
+    `unexpected flow-failed, got: ${JSON.stringify(events.filter((e) => e.type === "flow-failed"))}`,
+  );
+
+  const completes = events.filter((e) => e.type === "step-complete");
+  assert.equal(completes.length, 3, `expected 3 step-complete events, got ${completes.length}`);
+
+  const [first, second, third] = completes;
+  assert.ok(first && first.type === "step-complete" && first.output.includes("cont=0"));
+  assert.ok(second && second.type === "step-complete" && second.output.includes("cont=1"));
+  assert.ok(third && third.type === "step-complete" && third.output.includes("cont=0"));
+
+  console.log("engine continuation: OK");
+}
+
 async function main(): Promise<void> {
   if (!process.env.FLOWS_HOME) {
     throw new Error("Set FLOWS_HOME to a temp directory before running this smoke test.");
@@ -123,6 +223,8 @@ async function main(): Promise<void> {
   await testStorage();
   testTemplate();
   await testEngine();
+  testBuildAgentCommand();
+  await testEngineContinuation();
 
   console.log("OK");
 }

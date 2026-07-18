@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import type { SelectOption } from "@opentui/core";
-import { AGENTS, agentAvailable } from "../core/agents";
+import { AGENTS, agentAvailable, agentSupportsContinuation } from "../core/agents";
 import type { FlowStep } from "../types";
 import { colors, Hint } from "./theme";
 
@@ -35,6 +35,7 @@ export function StepEditor({
           expectedResult: "",
           validate: true,
           maxRetries: 1,
+          continueSession: false,
         },
   );
   const [cursor, setCursor] = useState(0);
@@ -45,7 +46,16 @@ export function StepEditor({
 
   const rows: string[] = ["name", "agent"];
   if (draft.agent === "custom") rows.push("customCommand");
-  rows.push("prompt", "expectedResult", "validate", "maxRetries", "workingDir", "save", "cancel");
+  rows.push(
+    "prompt",
+    "expectedResult",
+    "validate",
+    "continueSession",
+    "maxRetries",
+    "workingDir",
+    "save",
+    "cancel",
+  );
   const safeCursor = clamp(cursor, 0, rows.length - 1);
 
   function beginEdit(field: TextField, initial: string) {
@@ -115,6 +125,10 @@ export function StepEditor({
         break;
       case "validate":
         setDraft((d) => ({ ...d, validate: !d.validate }));
+        break;
+      case "continueSession":
+        if (!agentSupportsContinuation(draft.agent)) break;
+        setDraft((d) => ({ ...d, continueSession: !d.continueSession }));
         break;
       case "maxRetries":
         beginEdit("maxRetries", String(draft.maxRetries));
@@ -240,6 +254,23 @@ export function StepEditor({
 
         <text fg={rows[safeCursor] === "validate" ? colors.accent : colors.text}>
           Validate output: {draft.validate ? "[x] yes" : "[ ] no"}
+        </text>
+
+        <text
+          fg={
+            !agentSupportsContinuation(draft.agent)
+              ? colors.dim
+              : rows[safeCursor] === "continueSession"
+                ? colors.accent
+                : colors.text
+          }
+        >
+          Continue session:{" "}
+          {agentSupportsContinuation(draft.agent)
+            ? draft.continueSession
+              ? "[x] yes"
+              : "[ ] no"
+            : "not supported for this agent"}
         </text>
 
         <box flexDirection="column">

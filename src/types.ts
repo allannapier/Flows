@@ -40,6 +40,13 @@ export interface FlowStep {
   maxRetries: number;
   /** Working directory for the agent process (defaults to cwd). */
   workingDir?: string;
+  /**
+   * Continue the same agent conversation as the previous step in this run
+   * that used the same agent + working directory (fresh session if none yet).
+   * Supported: claude, opencode, codex, custom (via $FLOW_CONTINUE). Ignored
+   * for agents without non-interactive resume (gemini).
+   */
+  continueSession?: boolean;
 }
 
 export interface Flow {
@@ -71,6 +78,7 @@ export type RunEvent =
   | { type: "step-retry"; stepIndex: number; attempt: number; feedback: string }
   | { type: "step-complete"; stepIndex: number; output: string }
   | { type: "step-failed"; stepIndex: number; error: string }
+  | { type: "session-note"; stepIndex: number; note: string }
   | { type: "flow-complete" }
   | { type: "flow-failed"; error: string };
 

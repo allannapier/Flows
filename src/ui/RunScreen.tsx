@@ -141,6 +141,10 @@ export function RunScreen({
         });
         setStatusMessage({ text: `step ${e.stepIndex + 1} failed: ${e.error}`, color: colors.error });
         break;
+      case "session-note":
+        setStatusMessage({ text: e.note, color: colors.warning });
+        termRef.current?.feed(`\r\n\x1b[2m[note] ${e.note}\x1b[0m\r\n`);
+        break;
       case "flow-complete":
         setFlowStatus("complete");
         break;

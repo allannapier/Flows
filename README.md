@@ -31,6 +31,13 @@ Built with [OpenTUI](https://opentui.com/) (`@opentui/react`) on Bun.
 Each step chooses its own agent, so a single flow can mix agents (e.g. implement with
 Claude Code, review with a second agent).
 
+Steps can also set "Continue session" to chain into the same agent conversation as the
+previous step that used the same agent + working directory in the current run
+(`claude -p --continue`, `opencode run --continue`, `codex exec resume --last`, or
+`$FLOW_CONTINUE` for custom commands). The first step of a run for a given agent +
+working directory always starts fresh, even with the toggle on. Not supported for
+Gemini CLI (no verified non-interactive resume).
+
 Agents run inside a real PTY (via `bun-pty`), so they see a proper terminal —
 colors, progress rendering, TTY-gated behavior all work. The run screen renders
 the live session through Ghostty's terminal emulation

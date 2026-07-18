@@ -1,6 +1,6 @@
 # Exploration: Ghostty-backed terminal sessions per agent
 
-**Status: Phase 1 implemented (PTY execution + terminal pane); Phases 2-3 planned.** This doc records what the
+**Status: Phase 1 implemented (PTY execution + terminal pane); Phase 2 (--continue chaining) implemented; Phase 3 planned.** This doc records what the
 Ghostty library ecosystem offers, what was proven in a spike, and a proposed
 design for giving each agent step a real terminal session inside Flows.
 
@@ -90,6 +90,13 @@ Keep today's one-process-per-step model, but run it in a PTY:
   agents emit ANSI.
 
 ### Phase 2 — persistent sessions per agent
+
+**Implemented:** the `--continue`-chaining route below, gated per run: a step's
+effective continuation is `step.continueSession && agentSupportsContinuation(agent)
+&& sessionStarted.has(agent+cwd)` — so the first step for a given (agent, working
+directory) pair in a run always starts fresh, subsequent steps/retries for that pair
+resume it, and unsupported agents (Gemini) emit a `session-note` and run fresh. The
+generic interactive-persistent-PTY route remains future work.
 
 Two complementary routes:
 

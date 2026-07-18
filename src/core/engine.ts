@@ -5,7 +5,7 @@
 
 import { ptyToText } from "ghostty-opentui";
 import type { Flow, RunEvent, RunHandle, RunOptions } from "../types";
-import { buildAgentCommand } from "./agents";
+import { AGENTS, agentSupportsContinuation, buildAgentCommand } from "./agents";
 import { AgentSession } from "./session";
 import { renderTemplate } from "./template";
 import { validateOutput } from "./validator";
@@ -78,6 +78,13 @@ export function runFlow(
     }
 
     const stepOutputs: Record<string, string> = {};
+    // Tracks which (agent, resolved cwd) pairs have already run at least one
+    // attempt in this run, so the first step for a given pair always starts
+    // fresh even when continueSession=true (avoids attaching to an unrelated
+    // prior conversation, or the CLI erroring when there's nothing to
+    // continue). Retries of a continuing step continue automatically because
+    // the key is added after attempt 1.
+    const sessionStarted = new Set<string>();
 
     for (let stepIndex = 0; stepIndex < flow.steps.length; stepIndex++) {
       if (cancelled) {
@@ -86,6 +93,17 @@ export function runFlow(
       }
 
       const step = flow.steps[stepIndex];
+      const resolvedCwd = step.workingDir || process.cwd();
+      const sessionKey = `${step.agent}::${resolvedCwd}`;
+
+      if (step.continueSession && !agentSupportsContinuation(step.agent)) {
+        const agentLabel = AGENTS.find((a) => a.id === step.agent)?.label ?? step.agent;
+        onEvent({
+          type: "session-note",
+          stepIndex,
+          note: `${agentLabel} does not support session continuation — running fresh`,
+        });
+      }
 
       let basePrompt: string;
       try {
@@ -120,10 +138,15 @@ export function runFlow(
             ? basePrompt + RETRY_CONTEXT_TEMPLATE(retryFeedback)
             : basePrompt;
 
+        const effectiveContinue =
+          step.continueSession === true &&
+          agentSupportsContinuation(step.agent) &&
+          sessionStarted.has(sessionKey);
+
         let cmd: string[];
         let extraEnv: Record<string, string> | undefined;
         try {
-          const built = buildAgentCommand(step, promptForAttempt);
+          const built = buildAgentCommand(step, promptForAttempt, effectiveContinue);
           cmd = built.cmd;
           extraEnv = built.env;
         } catch (err) {
@@ -139,7 +162,7 @@ export function runFlow(
         const session = new AgentSession({
           cmd,
           env: extraEnv,
-          cwd: step.workingDir || process.cwd(),
+          cwd: resolvedCwd,
           cols: attemptCols,
           rows: attemptRows,
           onData: (chunk) => onEvent({ type: "agent-output", stepIndex, chunk }),
@@ -148,6 +171,11 @@ export function runFlow(
 
         const exitCode = await session.exited;
         currentSession = null;
+
+        // Mark this (agent, cwd) pair as having run at least one attempt,
+        // regardless of exit code / validation outcome, so subsequent
+        // attempts/steps that opt into continuation resume this conversation.
+        sessionStarted.add(sessionKey);
 
         onEvent({ type: "step-output-complete", stepIndex, exitCode });
 
