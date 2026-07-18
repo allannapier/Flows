@@ -4,7 +4,8 @@
 // theme.tsx rather than theme.ts as the spec suggested — a .ts file cannot
 // contain JSX syntax under this project's tsconfig.
 
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
+import type { TabSelectOption, TextareaRenderable } from "@opentui/core";
 
 // ---------------------------------------------------------------------------
 // Palette
@@ -13,10 +14,12 @@ import type { ReactNode } from "react";
 // - textPrimary is used for ALL real content/values — near-white, always
 //   legible against the dark background.
 // - textSecondary is for labels/descriptions — still clearly readable, never
-//   the old low-contrast #565f89 "dim" value that used to leak into content.
-// - chrome (#565f89-class) is reserved ONLY for decorative/unfocused
+//   a low-contrast "dim" value that used to leak into content.
+// - chrome (#3a4150-class) is reserved ONLY for decorative/unfocused
 //   borders — never for text a user needs to read.
-// - accent marks selection markers, focused-pane borders, and titles.
+// - accent marks selection markers, focused-pane borders, and titles —
+//   a vibrant terminal-hacker green. accentDim is the same hue for less
+//   prominent accent uses (unfocused-but-relevant borders, button outlines).
 // - selectionBg/selectionFg are the full-width highlight bar for whichever
 //   row currently has the cursor.
 export const colors = {
@@ -24,16 +27,17 @@ export const colors = {
   panel: "#20222f",
   panelAlt: "#1f2335",
 
-  accent: "#7aa2f7",
+  accent: "#34d399",
+  accentDim: "#1f9d67",
 
   textPrimary: "#e6e9f0",
-  textSecondary: "#9aa5ce",
-  textPlaceholder: "#6b7394",
+  textSecondary: "#9fb3a8",
+  textPlaceholder: "#6b7d74",
 
-  chrome: "#565f89",
+  chrome: "#3a4150",
 
-  selectionBg: "#283b5b",
-  selectionFg: "#f4f6fb",
+  selectionBg: "#17402c",
+  selectionFg: "#f0fdf4",
 
   success: "#9ece6a",
   warning: "#e0af68",
@@ -206,34 +210,214 @@ export function FieldRow({
   );
 }
 
-/** A boolean toggle row rendered as "[✓] yes" / "[ ] no". */
-export function ToggleRow({
+const YES_NO_OPTIONS: TabSelectOption[] = [
+  { name: "yes", description: "", value: "yes" },
+  { name: "no", description: "", value: "no" },
+];
+
+/**
+ * A boolean toggle row. At rest it shows a compact "[✓] yes" / "[ ] no"
+ * summary (like the old ToggleRow); when activated with ⏎ it swaps in a
+ * live segmented `<tab-select>` — left/right to move between yes/no, ⏎ to
+ * confirm. Because TabSelectRenderable has no controlled `selectedIndex`
+ * prop (only an imperative `setSelectedIndex`), the initial segment is set
+ * via a mount-time callback ref rather than a prop.
+ */
+export function TabToggleRow({
   label,
   selected,
+  editing,
   value,
   disabled,
   disabledNote,
+  onSelect,
 }: {
   label: string;
   selected: boolean;
+  editing: boolean;
   value: boolean;
   disabled?: boolean;
   disabledNote?: string;
+  onSelect: (value: boolean) => void;
 }) {
   const bg = disabled ? undefined : selected ? colors.selectionBg : undefined;
   const labelFg = disabled ? colors.textPlaceholder : selected ? colors.selectionFg : colors.textSecondary;
-  const boxFg = disabled ? colors.textPlaceholder : selected ? colors.selectionFg : value ? colors.success : colors.textSecondary;
-  const hint: KeyHintSpec[] = [{ keys: "⏎", label: "toggle" }];
+  const boxFg = disabled ? colors.textPlaceholder : selected ? colors.selectionFg : value ? colors.accent : colors.textSecondary;
+  const hint: KeyHintSpec[] = editing
+    ? [
+        { keys: "←→", label: "choose" },
+        { keys: "⏎", label: "confirm" },
+      ]
+    : [{ keys: "⏎", label: "toggle" }];
   return (
-    <box flexDirection="row" backgroundColor={bg}>
-      <text fg={labelFg} bg={bg}>
-        {marker(selected)}
-        {label}:{" "}
-      </text>
-      <text fg={boxFg} bg={bg}>
-        {disabled ? (disabledNote ?? "not supported") : value ? "[✓] yes" : "[ ] no"}
-      </text>
-      {selected && !disabled && <RowHint hints={hint} bg={bg} />}
+    <box flexDirection="column">
+      <box flexDirection="row" backgroundColor={bg}>
+        <text fg={labelFg} bg={bg}>
+          {marker(selected)}
+          {label}:{" "}
+        </text>
+        {!editing && (
+          <text fg={boxFg} bg={bg}>
+            {disabled ? (disabledNote ?? "not supported") : value ? "[✓] yes" : "[ ] no"}
+          </text>
+        )}
+        {selected && !disabled && <RowHint hints={hint} bg={bg} />}
+      </box>
+      {editing && !disabled && (
+        <box flexDirection="row" backgroundColor={bg}>
+          <text fg={labelFg} bg={bg}>
+            {"  "}
+          </text>
+          <tab-select
+            ref={(node) => {
+              if (node) node.setSelectedIndex(value ? 0 : 1);
+            }}
+            focused
+            flexGrow={1}
+            tabWidth={8}
+            showUnderline={false}
+            showDescription={false}
+            options={YES_NO_OPTIONS}
+            onSelect={(_i, option) => onSelect(option?.value === "yes")}
+            textColor={colors.textSecondary}
+            backgroundColor={colors.bg}
+            focusedBackgroundColor={colors.bg}
+            focusedTextColor={colors.textSecondary}
+            selectedBackgroundColor={colors.accent}
+            selectedTextColor={colors.bg}
+          />
+        </box>
+      )}
+    </box>
+  );
+}
+
+/** Collapse a possibly multi-line value into a single-line preview for
+ * FieldRow-style "not editing" display (real newlines would otherwise break
+ * the single <text> row). */
+export function previewLine(value: string, max = 90): string {
+  const flat = value.replace(/\r?\n/g, " ⏎ ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** A label-above-value row whose value is edited in a multi-line
+ * `<textarea>` (4-6 visible rows) instead of a single-line `<input>`.
+ * Unlike FieldRow, the textarea is uncontrolled — its live text is read via
+ * `textareaRef.current.plainText` (see TextareaRenderable / EditBufferRenderable)
+ * rather than an onInput callback, because EditBufferRenderable has no
+ * per-keystroke value event. Plain ⏎ inserts a newline (the textarea's own
+ * binding), so "esc" is repurposed as the commit key here — the caller
+ * reads the ref and applies it on escape instead of discarding like other
+ * fields do. */
+export function TextAreaFieldRow({
+  label,
+  selected,
+  editing,
+  textareaRef,
+  initialValue,
+  value,
+  placeholder,
+  rows = 6,
+}: {
+  label: string;
+  selected: boolean;
+  editing: boolean;
+  textareaRef: RefObject<TextareaRenderable | null>;
+  initialValue: string;
+  value: string;
+  placeholder: string;
+  rows?: number;
+}) {
+  const bg = selected ? colors.selectionBg : undefined;
+  const labelFg = selected ? colors.selectionFg : colors.textSecondary;
+  const hasValue = value.trim() !== "";
+  const valueFg = selected ? colors.selectionFg : valueColor(hasValue);
+  const hint: KeyHintSpec[] = editing ? [{ keys: "esc", label: "done" }] : [{ keys: "⏎", label: "edit" }];
+  return (
+    <box flexDirection="column">
+      <box flexDirection="row" backgroundColor={bg}>
+        <text fg={labelFg} bg={bg}>
+          {marker(selected)}
+          {label}
+        </text>
+        {selected && <RowHint hints={hint} bg={bg} />}
+      </box>
+      {editing ? (
+        <box height={rows} border borderStyle="single" borderColor={colors.accent}>
+          <textarea
+            ref={(node) => {
+              textareaRef.current = node;
+              // TextareaRenderable.setText() (used internally for
+              // initialValue) leaves the cursor at buffer position 0, so
+              // typing would prepend before existing content instead of
+              // continuing after it — move to the end on mount.
+              if (node) node.gotoBufferEnd();
+            }}
+            flexGrow={1}
+            focused
+            initialValue={initialValue}
+            placeholder={placeholder}
+            textColor={colors.textPrimary}
+            backgroundColor={colors.bg}
+            focusedBackgroundColor={colors.bg}
+            focusedTextColor={colors.textPrimary}
+            placeholderColor={colors.textPlaceholder}
+          />
+        </box>
+      ) : (
+        <box flexDirection="row" backgroundColor={bg}>
+          <text fg={valueFg} bg={bg}>
+            {"  "}
+            {hasValue ? previewLine(value) : placeholder}
+          </text>
+        </box>
+      )}
+    </box>
+  );
+}
+
+/** A small bordered "button": filled accent-green with dark text when
+ * selected/focused, transparent with an accent outline otherwise. There is
+ * no native <button> intrinsic in @opentui 0.4.5, so this is a plain <box>
+ * + <text>. */
+export function Button({
+  label,
+  selected,
+  color,
+}: {
+  label: string;
+  selected: boolean;
+  /** Override the accent color (e.g. colors.error for a destructive action). */
+  color?: string;
+}) {
+  const c = color ?? colors.accent;
+  return (
+    <box
+      border
+      borderStyle="rounded"
+      borderColor={selected ? c : colors.accentDim}
+      backgroundColor={selected ? c : undefined}
+      paddingLeft={2}
+      paddingRight={2}
+    >
+      <text fg={selected ? colors.bg : c}>{label}</text>
+    </box>
+  );
+}
+
+/** A row of side-by-side `<Button>`s (e.g. Save / Cancel). `gap` between
+ * buttons in a *row* box is safe — the sibling-spacing bug this codebase
+ * works around only affects flexDirection="column" boxes. */
+export function ButtonRow({
+  buttons,
+}: {
+  buttons: Array<{ label: string; selected: boolean; color?: string }>;
+}) {
+  return (
+    <box flexDirection="row" gap={2}>
+      {buttons.map((b) => (
+        <Button key={b.label} label={b.label} selected={b.selected} color={b.color} />
+      ))}
     </box>
   );
 }

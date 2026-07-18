@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import type { FlowParameter } from "../types";
-import { colors, Hint, FieldRow, SimpleRow, ToggleRow, type KeyHintSpec } from "./theme";
+import { colors, Hint, FieldRow, TabToggleRow, ButtonRow, type KeyHintSpec } from "./theme";
 
 type FieldKind = "name" | "description" | "default";
 
@@ -28,6 +28,7 @@ export function ParamForm({
   );
   const [cursor, setCursor] = useState(0);
   const [editing, setEditing] = useState<FieldKind | null>(null);
+  const [editingRequired, setEditingRequired] = useState(false);
   const [fieldDraft, setFieldDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -61,7 +62,7 @@ export function ParamForm({
         beginEdit("description", draft.description);
         break;
       case "required":
-        setDraft((d) => ({ ...d, required: !d.required }));
+        setEditingRequired(true);
         break;
       case "default":
         beginEdit("default", draft.default ?? "");
@@ -76,12 +77,24 @@ export function ParamForm({
   }
 
   useKeyboard((key) => {
+    if (editingRequired) {
+      if (key.name === "escape") setEditingRequired(false);
+      return;
+    }
     if (editing) {
       if (key.name === "escape") setEditing(null);
       return;
     }
     if (key.name === "escape") {
       onCancel();
+      return;
+    }
+    if (key.name === "left" && ROWS[cursor] === "cancel") {
+      setCursor(ROWS.indexOf("save"));
+      return;
+    }
+    if (key.name === "right" && ROWS[cursor] === "save") {
+      setCursor(ROWS.indexOf("cancel"));
       return;
     }
     if (key.name === "up") {
@@ -98,22 +111,34 @@ export function ParamForm({
   });
 
   const row = ROWS[cursor];
-  const bottomHints: KeyHintSpec[] = editing
+  const bottomHints: KeyHintSpec[] = editingRequired
     ? [
-        { keys: "⏎", label: "save" },
+        { keys: "←→", label: "choose" },
+        { keys: "⏎", label: "confirm" },
         { keys: "esc", label: "cancel" },
       ]
-    : [
-        ...(row === "required"
-          ? [{ keys: "⏎", label: "toggle" }]
-          : row === "save"
-            ? [{ keys: "⏎", label: "save" }]
-            : row === "cancel"
-              ? [{ keys: "⏎", label: "back" }]
-              : [{ keys: "⏎", label: "edit" }]),
-        { keys: "up/down", label: "move" },
-        { keys: "esc", label: "back" },
-      ];
+    : editing
+      ? [
+          { keys: "⏎", label: "save" },
+          { keys: "esc", label: "cancel" },
+        ]
+      : [
+          ...(row === "required"
+            ? [{ keys: "⏎", label: "toggle" }]
+            : row === "save"
+              ? [
+                  { keys: "⏎", label: "save" },
+                  { keys: "→", label: "cancel" },
+                ]
+              : row === "cancel"
+                ? [
+                    { keys: "⏎", label: "back" },
+                    { keys: "←", label: "save" },
+                  ]
+                : [{ keys: "⏎", label: "edit" }]),
+          { keys: "up/down", label: "move" },
+          { keys: "esc", label: "back" },
+        ];
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
@@ -147,7 +172,16 @@ export function ParamForm({
           value={draft.description}
           placeholder="(none)"
         />
-        <ToggleRow label="Required" selected={cursor === 2} value={draft.required} />
+        <TabToggleRow
+          label="Required"
+          selected={cursor === 2}
+          editing={editingRequired}
+          value={draft.required}
+          onSelect={(v) => {
+            setDraft((d) => ({ ...d, required: v }));
+            setEditingRequired(false);
+          }}
+        />
         <FieldRow
           label="Default value"
           selected={cursor === 3}
@@ -158,12 +192,12 @@ export function ParamForm({
           value={draft.default ?? ""}
           placeholder="(none)"
         />
-        <SimpleRow selected={cursor === 4} fg={colors.success} hint={[{ keys: "⏎", label: "save" }]}>
-          ▶ Save parameter
-        </SimpleRow>
-        <SimpleRow selected={cursor === 5} fg={colors.textSecondary} hint={[{ keys: "⏎", label: "back" }]}>
-          Cancel
-        </SimpleRow>
+        <ButtonRow
+          buttons={[
+            { label: "▶ Save parameter", selected: cursor === 4 },
+            { label: "Cancel", selected: cursor === 5 },
+          ]}
+        />
         {error && <text fg={colors.error}>{error}</text>}
       </box>
       <Hint hints={bottomHints} />

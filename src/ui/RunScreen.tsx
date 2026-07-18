@@ -53,8 +53,10 @@ const HORIZONTAL_CHROME = STEPS_PANE_WIDTH + 2 + 1 + 2;
 // strip + hint bar.
 const VERTICAL_CHROME = 8;
 
+// ANSI 256-color 114 is a muted spring-green, matching the accent family
+// without competing with the agent's own colored output.
 function stepSeparator(stepIndex: number, stepName: string): string {
-  return `\r\n\x1b[2m── step ${stepIndex + 1}: ${stepName} ──\x1b[0m\r\n`;
+  return `\r\n\x1b[2;38;5;114m── step ${stepIndex + 1}: ${stepName} ──\x1b[0m\r\n`;
 }
 
 export function RunScreen({

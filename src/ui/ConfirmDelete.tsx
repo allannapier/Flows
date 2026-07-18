@@ -1,7 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { TextAttributes } from "@opentui/core";
 import { getFlow, deleteFlow } from "../core/storage";
-import { colors, Hint } from "./theme";
+import { colors, Hint, Button } from "./theme";
 
 const HINTS = [
   { keys: "y", label: "confirm" },
@@ -48,11 +48,10 @@ export function ConfirmDelete({
           <span fg={colors.textSecondary}>"?</span>
         </text>
         <text fg={colors.textSecondary}>This cannot be undone.</text>
-        <text>
-          <span fg={colors.error} attributes={TextAttributes.BOLD}>y</span>
-          <span fg={colors.textSecondary}> / </span>
-          <span fg={colors.textPrimary} attributes={TextAttributes.BOLD}>N</span>
-        </text>
+        <box flexDirection="row" gap={2}>
+          <Button label="y delete" selected color={colors.error} />
+          <Button label="N cancel" selected={false} />
+        </box>
       </box>
       <Hint hints={HINTS} />
     </box>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { getFlow } from "../core/storage";
 import type { Flow } from "../types";
-import { colors, Hint, RowHint, marker, type KeyHintSpec } from "./theme";
+import { colors, Hint, RowHint, Button, marker, type KeyHintSpec } from "./theme";
 
 export function RunParamsForm({
   flowId,
@@ -141,14 +141,9 @@ export function RunParamsForm({
             </box>
           );
         })}
-        <box flexDirection="row" backgroundColor={onLastRow ? colors.selectionBg : undefined}>
-          <text
-            fg={onLastRow ? colors.selectionFg : colors.success}
-            bg={onLastRow ? colors.selectionBg : undefined}
-          >
-            {marker(onLastRow)}▶ Start flow
-          </text>
-          {onLastRow && <RowHint hints={[{ keys: "⏎", label: "start" }]} bg={colors.selectionBg} />}
+        <box flexDirection="row">
+          <Button label="▶ Start flow" selected={onLastRow} />
+          {onLastRow && <RowHint hints={[{ keys: "⏎", label: "start" }]} />}
         </box>
         {error && <text fg={colors.error}>{error}</text>}
       </box>

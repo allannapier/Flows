@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { getFlow, saveFlow, newFlowId } from "../core/storage";
 import type { Flow, FlowParameter, FlowStep } from "../types";
-import { colors, Hint, SimpleRow, FieldRow, type KeyHintSpec } from "./theme";
+import { colors, Hint, SimpleRow, FieldRow, ButtonRow, type KeyHintSpec } from "./theme";
 import { ParamForm } from "./ParamForm";
 import { StepEditor } from "./StepEditor";
 
@@ -190,6 +190,14 @@ export function FlowEditor({
       moveStep(row.index, 1);
       return;
     }
+    if (key.name === "left" && row.kind === "cancel") {
+      setCursor((c) => c - 1);
+      return;
+    }
+    if (key.name === "right" && row.kind === "save") {
+      setCursor((c) => c + 1);
+      return;
+    }
     if (key.name === "up") {
       setCursor((c) => Math.max(0, c - 1));
       return;
@@ -270,9 +278,15 @@ export function FlowEditor({
           : cur.kind === "add-param" || cur.kind === "add-step"
             ? [{ keys: "⏎", label: "add" }]
             : cur.kind === "save"
-              ? [{ keys: "⏎", label: "save" }]
+              ? [
+                  { keys: "⏎", label: "save" },
+                  { keys: "→", label: "cancel" },
+                ]
               : cur.kind === "cancel"
-                ? [{ keys: "⏎", label: "back" }]
+                ? [
+                    { keys: "⏎", label: "back" },
+                    { keys: "←", label: "save" },
+                  ]
                 : [{ keys: "⏎", label: "edit" }]),
         { keys: "ctrl+s", label: "save flow" },
         { keys: "esc", label: "back" },
@@ -363,12 +377,12 @@ export function FlowEditor({
           </SimpleRow>
         </box>
 
-        <SimpleRow selected={isRow("save")} fg={colors.success} hint={[{ keys: "⏎", label: "save" }]}>
-          ▶ Save flow
-        </SimpleRow>
-        <SimpleRow selected={isRow("cancel")} fg={colors.textSecondary} hint={[{ keys: "⏎", label: "back" }]}>
-          Cancel
-        </SimpleRow>
+        <ButtonRow
+          buttons={[
+            { label: "▶ Save flow", selected: isRow("save") },
+            { label: "Cancel", selected: isRow("cancel") },
+          ]}
+        />
         {error && <text fg={colors.error}>{error}</text>}
       </box>
       <Hint hints={bottomHints} />

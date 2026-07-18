@@ -1,9 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import type { SelectOption } from "@opentui/core";
+import type { TabSelectOption, TextareaRenderable } from "@opentui/core";
 import { AGENTS, agentAvailable, agentSupportsContinuation } from "../core/agents";
 import type { FlowStep } from "../types";
-import { colors, Hint, SimpleRow, FieldRow, ToggleRow, RowHint, marker, type KeyHintSpec } from "./theme";
+import {
+  colors,
+  Hint,
+  FieldRow,
+  TabToggleRow,
+  TextAreaFieldRow,
+  ButtonRow,
+  RowHint,
+  marker,
+  type KeyHintSpec,
+} from "./theme";
 
 type TextField = "name" | "customCommand" | "prompt" | "expectedResult" | "maxRetries" | "workingDir";
 
@@ -41,8 +51,11 @@ export function StepEditor({
   const [cursor, setCursor] = useState(0);
   const [editingField, setEditingField] = useState<TextField | null>(null);
   const [editingAgent, setEditingAgent] = useState(false);
+  const [editingValidate, setEditingValidate] = useState(false);
+  const [editingContinue, setEditingContinue] = useState(false);
   const [fieldDraft, setFieldDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<TextareaRenderable | null>(null);
 
   const rows: string[] = ["name", "agent"];
   if (draft.agent === "custom") rows.push("customCommand");
@@ -70,10 +83,6 @@ export function StepEditor({
           return { ...d, name: fieldDraft.trim() };
         case "customCommand":
           return { ...d, customCommand: fieldDraft || undefined };
-        case "prompt":
-          return { ...d, prompt: fieldDraft };
-        case "expectedResult":
-          return { ...d, expectedResult: fieldDraft };
         case "maxRetries": {
           const n = Number.parseInt(fieldDraft, 10);
           return { ...d, maxRetries: clamp(Number.isNaN(n) ? 0 : n, 0, 5) };
@@ -84,6 +93,16 @@ export function StepEditor({
           return d;
       }
     });
+    setEditingField(null);
+  }
+
+  /** Prompt / expected result are edited in a <textarea>, which is
+   * uncontrolled — read its live value off the ref rather than fieldDraft,
+   * and treat "esc" as the commit key (plain ⏎ inserts a newline inside a
+   * textarea, so it can't double as "save" the way it does for <input>). */
+  function commitTextareaField(field: "prompt" | "expectedResult") {
+    const val = textareaRef.current?.plainText ?? fieldDraft;
+    setDraft((d) => (field === "prompt" ? { ...d, prompt: val } : { ...d, expectedResult: val }));
     setEditingField(null);
   }
 
@@ -118,17 +137,19 @@ export function StepEditor({
         beginEdit("customCommand", draft.customCommand ?? "");
         break;
       case "prompt":
-        beginEdit("prompt", draft.prompt);
+        setFieldDraft(draft.prompt);
+        setEditingField("prompt");
         break;
       case "expectedResult":
-        beginEdit("expectedResult", draft.expectedResult);
+        setFieldDraft(draft.expectedResult);
+        setEditingField("expectedResult");
         break;
       case "validate":
-        setDraft((d) => ({ ...d, validate: !d.validate }));
+        setEditingValidate(true);
         break;
       case "continueSession":
         if (!agentSupportsContinuation(draft.agent)) break;
-        setDraft((d) => ({ ...d, continueSession: !d.continueSession }));
+        setEditingContinue(true);
         break;
       case "maxRetries":
         beginEdit("maxRetries", String(draft.maxRetries));
@@ -150,12 +171,32 @@ export function StepEditor({
       if (key.name === "escape") setEditingAgent(false);
       return;
     }
+    if (editingValidate) {
+      if (key.name === "escape") setEditingValidate(false);
+      return;
+    }
+    if (editingContinue) {
+      if (key.name === "escape") setEditingContinue(false);
+      return;
+    }
+    if (editingField === "prompt" || editingField === "expectedResult") {
+      if (key.name === "escape") commitTextareaField(editingField);
+      return;
+    }
     if (editingField) {
       if (key.name === "escape") setEditingField(null);
       return;
     }
     if (key.name === "escape") {
       onCancel();
+      return;
+    }
+    if (key.name === "left" && rows[safeCursor] === "cancel") {
+      setCursor(rows.indexOf("save"));
+      return;
+    }
+    if (key.name === "right" && rows[safeCursor] === "save") {
+      setCursor(rows.indexOf("cancel"));
       return;
     }
     if (key.name === "up") {
@@ -171,8 +212,8 @@ export function StepEditor({
     }
   });
 
-  const agentOptions: SelectOption[] = AGENTS.map((a) => ({
-    name: agentAvailable(a) ? a.label : `${a.label} (not installed)`,
+  const agentOptions: TabSelectOption[] = AGENTS.map((a) => ({
+    name: agentAvailable(a) ? a.label : `${a.label}*`,
     description: a.binary ? `binary: ${a.binary}` : "custom shell command",
     value: a.id,
   }));
@@ -183,27 +224,42 @@ export function StepEditor({
   // row, plus screen-level keys.
   const bottomHints: KeyHintSpec[] = editingAgent
     ? [
-        { keys: "⏎", label: "choose" },
+        { keys: "←→", label: "choose" },
+        { keys: "⏎", label: "confirm" },
         { keys: "esc", label: "cancel" },
       ]
-    : editingField
+    : editingValidate || editingContinue
       ? [
-          { keys: "⏎", label: "save" },
+          { keys: "←→", label: "choose" },
+          { keys: "⏎", label: "confirm" },
           { keys: "esc", label: "cancel" },
         ]
-      : [
-          ...(rows[safeCursor] === "agent"
-            ? [{ keys: "⏎", label: "choose" }]
-            : rows[safeCursor] === "validate" || rows[safeCursor] === "continueSession"
-              ? [{ keys: "⏎", label: "toggle" }]
-              : rows[safeCursor] === "save"
-                ? [{ keys: "⏎", label: "save" }]
-                : rows[safeCursor] === "cancel"
-                  ? [{ keys: "⏎", label: "back" }]
-                  : [{ keys: "⏎", label: "edit" }]),
-          { keys: "up/down", label: "move" },
-          { keys: "esc", label: "back" },
-        ];
+      : editingField === "prompt" || editingField === "expectedResult"
+        ? [{ keys: "esc", label: "done" }]
+        : editingField
+          ? [
+              { keys: "⏎", label: "save" },
+              { keys: "esc", label: "cancel" },
+            ]
+          : [
+              ...(rows[safeCursor] === "agent"
+                ? [{ keys: "⏎", label: "choose" }]
+                : rows[safeCursor] === "validate" || rows[safeCursor] === "continueSession"
+                  ? [{ keys: "⏎", label: "toggle" }]
+                  : rows[safeCursor] === "save"
+                    ? [
+                        { keys: "⏎", label: "save" },
+                        { keys: "→", label: "cancel" },
+                      ]
+                    : rows[safeCursor] === "cancel"
+                      ? [
+                          { keys: "⏎", label: "back" },
+                          { keys: "←", label: "save" },
+                        ]
+                      : [{ keys: "⏎", label: "edit" }]),
+              { keys: "up/down", label: "move" },
+              { keys: "esc", label: "back" },
+            ];
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
@@ -238,24 +294,29 @@ export function StepEditor({
             )}
           </box>
           {editingAgent ? (
-            <select
-              focused
-              height={AGENTS.length * 2}
-              options={agentOptions}
-              selectedIndex={Math.max(0, AGENTS.findIndex((a) => a.id === draft.agent))}
-              onSelect={(_i, option) => {
-                if (option) setDraft((d) => ({ ...d, agent: option.value }));
-                setEditingAgent(false);
-              }}
-              textColor={colors.textPrimary}
-              backgroundColor={colors.bg}
-              focusedBackgroundColor={colors.bg}
-              focusedTextColor={colors.textPrimary}
-              selectedBackgroundColor={colors.selectionBg}
-              selectedTextColor={colors.selectionFg}
-              descriptionColor={colors.textSecondary}
-              selectedDescriptionColor={colors.selectionFg}
-            />
+            <box height={3}>
+              <tab-select
+                ref={(node) => {
+                  if (node) node.setSelectedIndex(Math.max(0, AGENTS.findIndex((a) => a.id === draft.agent)));
+                }}
+                focused
+                flexGrow={1}
+                tabWidth={20}
+                showDescription
+                options={agentOptions}
+                onSelect={(_i, option) => {
+                  if (option) setDraft((d) => ({ ...d, agent: option.value }));
+                  setEditingAgent(false);
+                }}
+                textColor={colors.textPrimary}
+                backgroundColor={colors.bg}
+                focusedBackgroundColor={colors.bg}
+                focusedTextColor={colors.textPrimary}
+                selectedBackgroundColor={colors.selectionBg}
+                selectedTextColor={colors.selectionFg}
+                selectedDescriptionColor={colors.selectionFg}
+              />
+            </box>
           ) : (
             <box flexDirection="row" backgroundColor={isRow("agent") ? colors.selectionBg : undefined}>
               <text
@@ -282,36 +343,48 @@ export function StepEditor({
           />
         )}
 
-        <FieldRow
+        <TextAreaFieldRow
           label={`Prompt (supports {{params.<name>}} and {{steps.<name>.output}})`}
           selected={isRow("prompt")}
           editing={editingField === "prompt"}
-          fieldDraft={fieldDraft}
-          onInput={setFieldDraft}
-          onSubmit={commitField}
+          textareaRef={textareaRef}
+          initialValue={fieldDraft}
           value={draft.prompt}
           placeholder="(empty)"
         />
 
-        <FieldRow
+        <TextAreaFieldRow
           label="Expected result (used by the validator)"
           selected={isRow("expectedResult")}
           editing={editingField === "expectedResult"}
-          fieldDraft={fieldDraft}
-          onInput={setFieldDraft}
-          onSubmit={commitField}
+          textareaRef={textareaRef}
+          initialValue={fieldDraft}
           value={draft.expectedResult}
           placeholder="(empty)"
         />
 
-        <ToggleRow label="Validate output" selected={isRow("validate")} value={draft.validate} />
+        <TabToggleRow
+          label="Validate output"
+          selected={isRow("validate")}
+          editing={editingValidate}
+          value={draft.validate}
+          onSelect={(v) => {
+            setDraft((d) => ({ ...d, validate: v }));
+            setEditingValidate(false);
+          }}
+        />
 
-        <ToggleRow
+        <TabToggleRow
           label="Continue session"
           selected={isRow("continueSession")}
+          editing={editingContinue}
           value={!!draft.continueSession}
           disabled={!agentSupportsContinuation(draft.agent)}
           disabledNote="not supported for this agent"
+          onSelect={(v) => {
+            setDraft((d) => ({ ...d, continueSession: v }));
+            setEditingContinue(false);
+          }}
         />
 
         <FieldRow
@@ -336,12 +409,12 @@ export function StepEditor({
           placeholder="(cwd)"
         />
 
-        <SimpleRow selected={isRow("save")} fg={colors.success} hint={[{ keys: "⏎", label: "save" }]}>
-          ▶ Save step
-        </SimpleRow>
-        <SimpleRow selected={isRow("cancel")} fg={colors.textSecondary} hint={[{ keys: "⏎", label: "back" }]}>
-          Cancel
-        </SimpleRow>
+        <ButtonRow
+          buttons={[
+            { label: "▶ Save step", selected: isRow("save") },
+            { label: "Cancel", selected: isRow("cancel") },
+          ]}
+        />
         {error && <text fg={colors.error}>{error}</text>}
       </box>
       <Hint hints={bottomHints} />
