@@ -121,6 +121,26 @@ export interface ValidationVerdict {
   questionsSummary?: string;
 }
 
+/** Per-execution statistics for a single step, computed by the engine as the
+ * step runs and attached to its "step-complete" / "step-failed" event. */
+export interface StepStats {
+  /** How many agent turns the step took (one per attempt on the exec path,
+   * one per completed turn — including retries and awaiting-input turns —
+   * on the interactive path). */
+  turns: number;
+  /** Total tokens (input + output) reported by the validator LLM across all
+   * validation calls made for this step execution. 0 when validation is off
+   * or no provider usage was reported. */
+  tokensUsed: number;
+  /** Number of validation failures (failed attempts) before the step
+   * completed or gave up. */
+  errorCount: number;
+  /** Estimated cost in USD, computed from tokensUsed and the validator
+   * model's known pricing. undefined when the model's pricing is unknown or
+   * no tokens were used. */
+  estimatedCostUsd?: number;
+}
+
 export type RunEvent =
   | { type: "flow-start"; flowName: string; totalSteps: number }
   | { type: "step-start"; stepIndex: number; stepName: string; agent: AgentId; attempt: number }
@@ -129,8 +149,8 @@ export type RunEvent =
   | { type: "validation-start"; stepIndex: number }
   | { type: "validation-result"; stepIndex: number; verdict: ValidationVerdict }
   | { type: "step-retry"; stepIndex: number; attempt: number; feedback: string }
-  | { type: "step-complete"; stepIndex: number; output: string }
-  | { type: "step-failed"; stepIndex: number; error: string }
+  | { type: "step-complete"; stepIndex: number; output: string; stats: StepStats }
+  | { type: "step-failed"; stepIndex: number; error: string; stats: StepStats }
   | { type: "session-note"; stepIndex: number; note: string }
   /** The engine's step pointer jumped non-sequentially because of a step's
    * `routing` configuration — either forward-skipping on success or
@@ -230,6 +250,9 @@ export interface RunStepRecord {
   /** Cleaned (non-ANSI) output text, present once the step has completed. */
   output?: string;
   error?: string;
+  /** Turn/token/error/cost stats for this step's (latest) execution. Absent
+   * on records from before this field existed. */
+  stats?: StepStats;
 }
 
 /** A single run of a flow — one JSON file per run under

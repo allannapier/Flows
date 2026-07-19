@@ -20,6 +20,15 @@ const STATUS_COLOR: Record<RunStepRecord["status"], string> = {
  * lives in the run's JSON file under ~/.flows/runs/ for anyone who needs it. */
 const MAX_PREVIEW_LINES = 30;
 
+/** Renders a step's stats as a compact "Turns: 3 · Tokens: 4,210 · Errors: 1 ·
+ * Cost: ~$0.021" line, using "—" for any figure that isn't available. */
+function formatStepStats(stats: RunStepRecord["stats"]): string {
+  if (!stats) return "";
+  const tokens = stats.tokensUsed > 0 ? stats.tokensUsed.toLocaleString() : "—";
+  const cost = stats.estimatedCostUsd !== undefined ? `~$${stats.estimatedCostUsd.toFixed(3)}` : "—";
+  return `Turns: ${stats.turns} · Tokens: ${tokens} · Errors: ${stats.errorCount} · Cost: ${cost}`;
+}
+
 /** Read-only summary of a finished run: step statuses plus each step's
  * captured output. Used when the run is no longer in runManager's active
  * registry (already finished and the app may have restarted since) — a
@@ -115,6 +124,9 @@ export function RunDetail({ flowId, runId, onBack }: { flowId: string; runId: st
           ))}
           {truncated && (
             <text fg={colors.textPlaceholder}>… truncated — full output in ~/.flows/runs/{flowId}/{runId}.json</text>
+          )}
+          {selectedStep?.stats && (
+            <text fg={colors.textSecondary}>{formatStepStats(selectedStep.stats)}</text>
           )}
         </box>
       </box>

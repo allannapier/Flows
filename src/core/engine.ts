@@ -15,7 +15,7 @@
 // Both paths share: prompt templating, LLM validation, and retry/attempt
 // bookkeeping.
 
-import type { AgentId, Flow, RunEvent, RunHandle, RunOptions, ValidationVerdict } from "../types";
+import type { AgentId, Flow, RunEvent, RunHandle, RunOptions, StepStats, ValidationVerdict } from "../types";
 import { AGENTS, agentSupportsContinuation, buildAgentCommand } from "./agents";
 import { AgentSession } from "./session";
 import {
@@ -224,8 +224,9 @@ export function runFlow(
     step: Flow["steps"][number],
     stepIndex: number,
     error: string,
+    stats: StepStats,
   ): Promise<"cancelled" | { outcome: "failed"; error: string }> {
-    onEvent({ type: "step-failed", stepIndex, error });
+    onEvent({ type: "step-failed", stepIndex, error, stats });
     if (!step.alertOnFailure) return { outcome: "failed", error };
 
     onEvent({ type: "step-alert", stepIndex, stepName: step.name, error });
@@ -338,7 +339,7 @@ export function runFlow(
         basePrompt = renderTemplate(step.prompt, params, stepOutputs);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        onEvent({ type: "step-failed", stepIndex, error: message });
+        onEvent({ type: "step-failed", stepIndex, error: message, stats: { turns: 0, tokensUsed: 0, errorCount: 0 } });
         const routed = tryRouteFailure(stepIndex);
         if (routed !== null) {
           stepIndex = routed;
@@ -401,12 +402,25 @@ export function runFlow(
     const maxAttempts = 1 + Math.max(0, step.maxRetries);
     let retryFeedback: string | undefined;
 
+    let turns = 0;
+    let tokensUsed = 0;
+    let errorCount = 0;
+    let costSum = 0;
+    let costKnown = false;
+    const buildStats = (): StepStats => ({
+      turns,
+      tokensUsed,
+      errorCount,
+      estimatedCostUsd: costKnown ? costSum : undefined,
+    });
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (cancelled) {
         emitCancelledIfNeeded();
         return "cancelled";
       }
 
+      turns++;
       onEvent({
         type: "step-start",
         stepIndex,
@@ -433,7 +447,7 @@ export function runFlow(
         extraEnv = built.env;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        onEvent({ type: "step-failed", stepIndex, error: message });
+        onEvent({ type: "step-failed", stepIndex, error: message, stats: buildStats() });
         return { outcome: "failed", error: message };
       }
 
@@ -469,26 +483,33 @@ export function runFlow(
 
       if (exitCode !== 0) {
         const feedback = `Agent exited with code ${exitCode}`;
+        errorCount++;
         if (attempt < maxAttempts) {
           onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback });
           retryFeedback = feedback;
           continue;
         }
-        return reportStepFailure(step, stepIndex, feedback);
+        return reportStepFailure(step, stepIndex, feedback, buildStats());
       }
 
       if (step.validate) {
         onEvent({ type: "validation-start", stepIndex });
         let verdict;
         try {
-          verdict = await validateOutput({
+          const result = await validateOutput({
             stepPrompt: basePrompt,
             expectedResult: step.expectedResult,
             output: stepText,
           });
+          verdict = result.verdict;
+          if (result.usage) tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
+          if (result.costUsd !== undefined) {
+            costSum += result.costUsd;
+            costKnown = true;
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          onEvent({ type: "step-failed", stepIndex, error: message });
+          onEvent({ type: "step-failed", stepIndex, error: message, stats: buildStats() });
           return { outcome: "failed", error: message };
         }
 
@@ -500,6 +521,7 @@ export function runFlow(
         onEvent({ type: "validation-result", stepIndex, verdict });
 
         if (!verdict.passed) {
+          errorCount++;
           if (attempt < maxAttempts) {
             onEvent({
               type: "step-retry",
@@ -510,12 +532,12 @@ export function runFlow(
             retryFeedback = verdict.feedback;
             continue;
           }
-          return reportStepFailure(step, stepIndex, verdict.feedback);
+          return reportStepFailure(step, stepIndex, verdict.feedback, buildStats());
         }
       }
 
       stepOutputs[step.name] = stepText;
-      onEvent({ type: "step-complete", stepIndex, output: stepText });
+      onEvent({ type: "step-complete", stepIndex, output: stepText, stats: buildStats() });
       return "success";
     }
 
@@ -569,6 +591,17 @@ export function runFlow(
     const turns: string[] = [];
     const maxAttempts = 1 + Math.max(0, step.maxRetries);
     let attempt = 1;
+
+    let tokensUsed = 0;
+    let errorCount = 0;
+    let costSum = 0;
+    let costKnown = false;
+    const buildStats = (): StepStats => ({
+      turns: turns.length,
+      tokensUsed,
+      errorCount,
+      estimatedCostUsd: costKnown ? costSum : undefined,
+    });
 
     activeOutputStepIndex = stepIndex;
 
@@ -632,10 +665,16 @@ export function runFlow(
       if (step.validate) {
         onEvent({ type: "validation-start", stepIndex });
         try {
-          verdict = await validateOutput({ stepPrompt: basePrompt, expectedResult: step.expectedResult, output: stepText });
+          const result = await validateOutput({ stepPrompt: basePrompt, expectedResult: step.expectedResult, output: stepText });
+          verdict = result.verdict;
+          if (result.usage) tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
+          if (result.costUsd !== undefined) {
+            costSum += result.costUsd;
+            costKnown = true;
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          onEvent({ type: "step-failed", stepIndex, error: message });
+          onEvent({ type: "step-failed", stepIndex, error: message, stats: buildStats() });
           return { outcome: "failed", error: message };
         }
 
@@ -647,6 +686,7 @@ export function runFlow(
         onEvent({ type: "validation-result", stepIndex, verdict });
 
         if (!verdict.passed) {
+          errorCount++;
           if (attempt < maxAttempts) {
             onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback: verdict.feedback });
             attempt++;
@@ -659,14 +699,14 @@ export function runFlow(
             onEvent({ type: "step-start", stepIndex, stepName: step.name, agent: step.agent, attempt });
             continue;
           }
-          return reportStepFailure(step, stepIndex, verdict.feedback);
+          return reportStepFailure(step, stepIndex, verdict.feedback, buildStats());
         }
       }
 
       const needsGate = verdict?.needsUserInput === true || step.pauseForReview === true;
       if (!needsGate) {
         stepOutputs[step.name] = stepText;
-        onEvent({ type: "step-complete", stepIndex, output: stepText });
+        onEvent({ type: "step-complete", stepIndex, output: stepText, stats: buildStats() });
         return "success";
       }
       // --- Awaiting-input gate. ---
@@ -720,10 +760,16 @@ export function runFlow(
         if (step.validate) {
           let gVerdict: ValidationVerdict;
           try {
-            gVerdict = await validateOutput({ stepPrompt: basePrompt, expectedResult: step.expectedResult, output: gatedText });
+            const gResultValidation = await validateOutput({ stepPrompt: basePrompt, expectedResult: step.expectedResult, output: gatedText });
+            gVerdict = gResultValidation.verdict;
+            if (gResultValidation.usage) tokensUsed += gResultValidation.usage.inputTokens + gResultValidation.usage.outputTokens;
+            if (gResultValidation.costUsd !== undefined) {
+              costSum += gResultValidation.costUsd;
+              costKnown = true;
+            }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            onEvent({ type: "step-failed", stepIndex, error: message });
+            onEvent({ type: "step-failed", stepIndex, error: message, stats: buildStats() });
             return { outcome: "failed", error: message };
           }
 
@@ -752,7 +798,7 @@ export function runFlow(
 
       const finalText = turns.join(TURN_JOIN);
       stepOutputs[step.name] = finalText;
-      onEvent({ type: "step-complete", stepIndex, output: finalText });
+      onEvent({ type: "step-complete", stepIndex, output: finalText, stats: buildStats() });
       return "success";
     }
   }
