@@ -51,11 +51,13 @@ export function RunHistory({
   flowId,
   flowName,
   onSelectRun,
+  onRerun,
   onBack,
 }: {
   flowId: string;
   flowName: string;
   onSelectRun: (runId: string) => void;
+  onRerun: (params: Record<string, string>) => void;
   onBack: () => void;
 }) {
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -83,11 +85,17 @@ export function RunHistory({
     if (key.name === "return") {
       const run = runs[safeCursor];
       if (run) onSelectRun(run.id);
+      return;
+    }
+    if (key.name === "r") {
+      const run = runs[safeCursor];
+      if (run) onRerun(run.params);
     }
   });
 
   const bottomHints: KeyHintSpec[] = [
     { keys: "⏎", label: "open" },
+    { keys: "r", label: "re-run" },
     { keys: "up/down", label: "move" },
     { keys: "esc", label: "back" },
   ];
@@ -120,7 +128,15 @@ export function RunHistory({
             .map(([k, v]) => `${k}=${v}`)
             .join(", ");
           return (
-            <SimpleRow key={run.id} selected={safeCursor === i} fg={STATUS_COLOR[run.status]} hint={[{ keys: "⏎", label: "open" }]}>
+            <SimpleRow
+              key={run.id}
+              selected={safeCursor === i}
+              fg={STATUS_COLOR[run.status]}
+              hint={[
+                { keys: "⏎", label: "open" },
+                { keys: "r", label: "re-run" },
+              ]}
+            >
               {STATUS_GLYPH[run.status]} {formatWhen(run.startedAt)}
               {"  "}
               {run.status}

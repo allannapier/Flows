@@ -15,7 +15,7 @@ import { getFlow } from "../core/storage";
 export type Screen =
   | { name: "list" }
   | { name: "edit"; flowId?: string }
-  | { name: "run-params"; flowId: string }
+  | { name: "run-params"; flowId: string; initialParams?: Record<string, string> }
   // `runId` absent = start a fresh run using `params`; present = attach to
   // an existing (in-progress or just-finished) run instead.
   | { name: "run"; flowId: string; runId?: string; params?: Record<string, string> }
@@ -79,6 +79,7 @@ export function App() {
       return (
         <RunParamsForm
           flowId={flowId}
+          initialParams={screen.initialParams}
           onStart={(params) => setScreen({ name: "run", flowId, params })}
           onCancel={() => setScreen({ name: "list" })}
         />
@@ -99,6 +100,7 @@ export function App() {
             if (getActiveRun(runId)) setScreen({ name: "run", flowId, runId });
             else setScreen({ name: "run-detail", flowId, runId });
           }}
+          onRerun={(params) => setScreen({ name: "run-params", flowId, initialParams: params })}
           onBack={() => setScreen({ name: "list" })}
         />
       );
@@ -108,6 +110,7 @@ export function App() {
         <RunDetail
           flowId={screen.flowId}
           runId={screen.runId}
+          onRerun={(params) => setScreen({ name: "run-params", flowId: screen.flowId, initialParams: params })}
           onBack={() => setScreen({ name: "history", flowId: screen.flowId })}
         />
       );

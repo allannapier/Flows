@@ -33,7 +33,17 @@ function formatStepStats(stats: RunStepRecord["stats"]): string {
  * captured output. Used when the run is no longer in runManager's active
  * registry (already finished and the app may have restarted since) — a
  * still-active run instead reattaches to the live RunScreen. */
-export function RunDetail({ flowId, runId, onBack }: { flowId: string; runId: string; onBack: () => void }) {
+export function RunDetail({
+  flowId,
+  runId,
+  onRerun,
+  onBack,
+}: {
+  flowId: string;
+  runId: string;
+  onRerun: (params: Record<string, string>) => void;
+  onBack: () => void;
+}) {
   const [run] = useState<RunRecord | undefined>(() => getRun(flowId, runId));
   const [stepCursor, setStepCursor] = useState(0);
 
@@ -51,11 +61,16 @@ export function RunDetail({ flowId, runId, onBack }: { flowId: string; runId: st
     }
     if (key.name === "down") {
       setStepCursor((c) => Math.min(steps.length - 1, c + 1));
+      return;
+    }
+    if (key.name === "r" && run) {
+      onRerun(run.params);
     }
   });
 
   const bottomHints: KeyHintSpec[] = [
     { keys: "up/down", label: "select step" },
+    { keys: "r", label: "re-run" },
     { keys: "esc/q", label: "back" },
   ];
 

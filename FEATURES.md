@@ -9,7 +9,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **1. Advanced Flow Steps — Conditional Next-Step Routing**
 - [x] **2. Alert on Step Failure**
 - [x] **3. Step Stats (turns, tokens, errors, cost)**
-- [ ] **4. Re-run a Previous Run with the Same Parameters**
+- [x] **4. Re-run a Previous Run with the Same Parameters**
 - [ ] **5. Reusable Flows — Templated & Flow-Level Working Directory**
 - [ ] **6. Flow Portability — Duplicate, Export, and Import**
 - [ ] **7. Flow Integrity Linting (save-time + pre-run)**
@@ -157,7 +157,7 @@ Track and display per-step execution statistics in the run detail view: how many
 
 ### 4. Re-run a Previous Run with the Same Parameters
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Let the user restart a flow directly from run history without re-typing parameter values. Runs already persist their `params` in `RunRecord`, but today the only way to run again is to go back to the flow list and fill in the parameter form from scratch. This is the most common loop while iterating on a flow ("tweak the flow, run it again with the same inputs").
