@@ -53,6 +53,16 @@ export interface FlowStep {
    * for agents without non-interactive resume (gemini).
    */
   continueSession?: boolean;
+  /**
+   * Pause after this step succeeds so the user can read the agent's output
+   * and, if it asked questions, reply before the flow continues. Same
+   * pause also triggers automatically when validation detects the agent is
+   * waiting on the user (see ValidationVerdict.needsUserInput) — this flag
+   * is for forcing it unconditionally. Requires an agent that supports
+   * session continuation to actually let the user reply; otherwise the
+   * flow just proceeds with a note.
+   */
+  pauseForReview?: boolean;
 }
 
 export interface Flow {
@@ -72,6 +82,14 @@ export interface Flow {
 export interface ValidationVerdict {
   passed: boolean;
   feedback: string;
+  /** True when the agent's output explicitly asks the user questions or
+   * requests a decision before proceeding. Independent of `passed` — a step
+   * can pass validation and still need user input (e.g. a planning step
+   * that finished its plan but is asking which option to pick). */
+  needsUserInput?: boolean;
+  /** One-line summary of what's being asked, present only when
+   * needsUserInput is true. */
+  questionsSummary?: string;
 }
 
 export type RunEvent =
@@ -85,18 +103,50 @@ export type RunEvent =
   | { type: "step-complete"; stepIndex: number; output: string }
   | { type: "step-failed"; stepIndex: number; error: string }
   | { type: "session-note"; stepIndex: number; note: string }
+  /** A claude step's turn finished and the flow is now paused waiting on the
+   * user — either the validator detected the agent is asking a question
+   * (needsUserInput) or the step has pauseForReview. `message` is a
+   * human-readable summary (includes questionsSummary when present). The
+   * interactive session stays alive; the user can attach and reply, or the
+   * UI can call RunHandle.continueFlow() to proceed immediately. */
+  | { type: "step-awaiting-input"; stepIndex: number; stepName: string; message: string }
   | { type: "flow-complete" }
-  | { type: "flow-failed"; error: string };
+  | { type: "flow-failed"; error: string }
+  /** Fires whenever whether this run has a live interactive agent session
+   * transitions (0 live sessions <-> at least 1). An interactive step's
+   * session is no longer killed automatically when the flow finishes —
+   * it survives so the user can keep attaching and chatting with it — so
+   * this can fire well after "flow-complete"/"flow-failed", whenever the
+   * surviving session ends on its own (crash, /exit) or is explicitly
+   * closed via RunHandle.closeSession(). Purely in-memory signal — never
+   * reflected in the persisted RunRecord. */
+  | { type: "session-live-changed"; live: boolean };
 
 export interface RunHandle {
   /** Resolves when the run finishes (success or failure). Never rejects. */
   done: Promise<void>;
-  /** Abort the run (kills the current agent process). */
+  /** Abort the run (kills the current agent process and any live
+   * interactive session, and cleans up the run's scratch dir). */
   cancel(): void;
   /** Resize the PTY of the currently running step (no-op when idle). */
   resize(cols: number, rows: number): void;
   /** Write raw bytes to the PTY of the currently running step (no-op when idle). */
   write(data: string): void;
+  /** Leave an "awaiting-input" gate immediately and proceed to the next
+   * step, keeping whatever output has accumulated so far for the gated
+   * step. No-op when the run isn't currently gated. */
+  continueFlow(): void;
+  /** True if an interactive agent session is currently alive for this run
+   * — including after the flow has finished, since a finished flow's last
+   * interactive session is kept alive for the user to keep chatting with
+   * (see "session-live-changed" for the reactive version). */
+  hasLiveSession(): boolean;
+  /** Kills any live interactive session for this run and cleans up its
+   * scratch dir. Safe to call at any time, including when nothing is
+   * alive (no-op) or more than once. Independent of the run's
+   * status/RunRecord — closing the session after a flow has already
+   * finished does not change its persisted outcome. */
+  closeSession(): void;
 }
 
 /** Optional terminal size hints for runFlow; defaults to 120x30. */
@@ -109,7 +159,20 @@ export interface RunOptions {
 // Run history (persisted record of a finished/in-progress run)
 // ---------------------------------------------------------------------------
 
-export type RunStatus = "running" | "complete" | "failed" | "cancelled";
+export type RunStatus =
+  | "running"
+  | "complete"
+  | "failed"
+  | "cancelled"
+  /** The run is paused, waiting on the user before it can continue (e.g. a
+   * step whose agent asked a follow-up question). Set/cleared by the engine
+   * around claude steps' interactive turns — see RunEvent's
+   * "step-awaiting-input" and RunHandle.continueFlow(). */
+  | "awaiting-input"
+  /** Flows exited (or crashed) while this run was "running" or
+   * "awaiting-input" — rewritten at startup by runStore's stale-run sweep
+   * since there's no in-memory run left to finish it. */
+  | "interrupted";
 
 export interface RunStepRecord {
   stepId: string;

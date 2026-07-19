@@ -90,9 +90,11 @@ export function FlowList({
   const options: SelectOption[] = flows.map((f) => {
     const inProgress = getInProgressRunForFlow(f.id);
     const base = `${f.description || "No description"}  ·  ${f.steps.length} step${f.steps.length === 1 ? "" : "s"}`;
+    const liveTag =
+      inProgress?.status === "awaiting-input" ? "  ·  ⧖ waiting on you" : inProgress ? "  ·  ● running" : "";
     return {
       name: f.name || "(untitled flow)",
-      description: inProgress ? `${base}  ·  ● running` : base,
+      description: `${base}${liveTag}`,
       value: f.id,
     };
   });

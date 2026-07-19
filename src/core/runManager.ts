@@ -13,7 +13,7 @@
 
 import type { Flow, RunEvent, RunHandle, RunOptions, RunRecord, RunStatus, RunStepRecord } from "../types";
 import { runFlow } from "./engine";
-import { saveRun } from "./runStore";
+import { saveRun, sweepStaleRuns } from "./runStore";
 
 // ANSI 256-color 114 is a muted spring-green, matching the UI's accent
 // family without competing with the agent's own colored output.
@@ -44,6 +44,13 @@ export interface ActiveRun {
   feedLog: string[];
   startedAt: string;
   finishedAt?: string;
+  /** Mirrors RunHandle.hasLiveSession() — kept current via the
+   * "session-live-changed" event rather than polled. An interactive step's
+   * session is no longer killed when the flow finishes, so this can stay
+   * true well after status is "complete"/"failed", letting the UI offer
+   * "attach" / "close session" on a finished run. Purely in-memory; never
+   * reflected in the persisted RunRecord. */
+  hasLiveSession: boolean;
 }
 
 // Caps how much raw terminal output a single run holds in memory; long-running
@@ -55,6 +62,12 @@ type Listener = () => void;
 
 const active = new Map<string, ActiveRun>();
 const listeners = new Map<string, Set<Listener>>();
+
+// Runs left "running"/"awaiting-input" on disk from a previous process (app
+// exited or crashed mid-flow) have nothing left to ever finish them —
+// rewrite them to "interrupted" once, at module load (i.e. app startup,
+// before any run has been started so `active` is still empty).
+sweepStaleRuns((runId) => active.has(runId));
 
 function notify(runId: string): void {
   for (const l of listeners.get(runId) ?? []) l();
@@ -77,7 +90,7 @@ export function getActiveRun(runId: string): ActiveRun | undefined {
  * "resume" instead of starting a second concurrent run from the flow list. */
 export function getInProgressRunForFlow(flowId: string): ActiveRun | undefined {
   for (const run of active.values()) {
-    if (run.flowId === flowId && run.status === "running") return run;
+    if (run.flowId === flowId && (run.status === "running" || run.status === "awaiting-input")) return run;
   }
   return undefined;
 }
@@ -106,12 +119,15 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
     finalError: null,
     feedLog: [],
     startedAt: new Date().toISOString(),
+    hasLiveSession: false,
   };
 
   function persist(status: RunStatus, error?: string) {
     run.status = status;
     run.finalError = error ?? null;
-    if (status !== "running") run.finishedAt = new Date().toISOString();
+    if (status === "complete" || status === "failed" || status === "cancelled") {
+      run.finishedAt = new Date().toISOString();
+    }
     const record: RunRecord = {
       id,
       flowId: flow.id,
@@ -137,6 +153,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
     (e: RunEvent) => {
       switch (e.type) {
         case "step-start":
+          run.status = "running";
           run.stepStatuses[e.stepIndex] = "running";
           run.attempts[e.stepIndex] = e.attempt;
           if (e.attempt === 1) {
@@ -162,7 +179,13 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           run.stepStatuses[e.stepIndex] = "retrying";
           run.statusMessage = { text: `retrying (attempt ${e.attempt}): ${e.feedback}`, kind: "warning" };
           break;
+        case "step-awaiting-input":
+          run.status = "awaiting-input";
+          run.statusMessage = { text: e.message, kind: "warning" };
+          run.feedLog.push(`\r\n\x1b[2m[awaiting-input] ${e.message}\x1b[0m\r\n`);
+          break;
         case "step-complete": {
+          run.status = "running";
           run.stepStatuses[e.stepIndex] = "done";
           const rec = stepRecords[e.stepIndex];
           if (rec) {
@@ -187,6 +210,9 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           run.statusMessage = { text: e.note, kind: "warning" };
           run.feedLog.push(`\r\n\x1b[2m[note] ${e.note}\x1b[0m\r\n`);
           break;
+        case "session-live-changed":
+          run.hasLiveSession = e.live;
+          break;
         case "flow-complete":
           persist("complete");
           break;
@@ -209,4 +235,19 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
 
 export function cancelRun(runId: string): void {
   active.get(runId)?.handle.cancel();
+}
+
+/** Leaves a run's "awaiting-input" gate immediately (no-op if it isn't
+ * currently gated) — the explicit "proceed now" action from the UI. */
+export function continueRun(runId: string): void {
+  active.get(runId)?.handle.continueFlow();
+}
+
+/** Kills any live interactive session for a run and cleans up its scratch
+ * dir — the explicit "close session" action from the UI, typically offered
+ * once a run has finished but its last interactive session is still alive
+ * for attach. Safe to call when nothing is alive, or more than once. Does
+ * not change the run's persisted status. */
+export function closeRun(runId: string): void {
+  active.get(runId)?.handle.closeSession();
 }

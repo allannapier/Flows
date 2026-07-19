@@ -1,8 +1,10 @@
 # Exploration: Ghostty-backed terminal sessions per agent
 
-**Status: all three phases implemented — Phase 1 (PTY execution + terminal pane), Phase 2 (--continue chaining), and Phase 3 (attach/takeover).** This doc records what the
-Ghostty library ecosystem offers, what was proven in a spike, and a proposed
-design for giving each agent step a real terminal session inside Flows.
+**Status: superseded in the best way — all three phases are implemented, and the
+"generic interactive sessions" route that Phase 2 deferred is now the default
+execution model** (see "Interactive sessions as shipped" at the end). This doc
+records what the Ghostty library ecosystem offers, what was proven in a spike,
+and the design that got us here.
 
 ## Why
 
@@ -91,12 +93,14 @@ Keep today's one-process-per-step model, but run it in a PTY:
 
 ### Phase 2 — persistent sessions per agent
 
-**Implemented:** the `--continue`-chaining route below, gated per run: a step's
-effective continuation is `step.continueSession && agentSupportsContinuation(agent)
-&& sessionStarted.has(agent+cwd)` — so the first step for a given (agent, working
-directory) pair in a run always starts fresh, subsequent steps/retries for that pair
-resume it, and unsupported agents (Gemini) emit a `session-note` and run fresh. The
-generic interactive-persistent-PTY route remains future work.
+**Implemented, then superseded:** the `--continue`-chaining route below shipped
+first, gated per run on `step.continueSession && agentSupportsContinuation(agent)
+&& sessionStarted.has(agent+cwd)`. It has since been replaced for the four
+first-class agents by the generic interactive-persistent-PTY route (see
+"Interactive sessions as shipped"), which turned out not to need output-quiescence
+heuristics for three of the four — the agent CLIs themselves provide reliable
+turn-completion hooks. The exec + `--continue` path remains only for `custom`
+commands.
 
 Two complementary routes:
 
@@ -145,3 +149,44 @@ quitting Flows while attached.
 Adopt Phase 1 now (small, isolated change; immediate UX and validator
 improvements), Phase 2's `--continue` chaining for Claude Code next, and treat
 Phase 3 as a feature milestone once panes are in.
+
+## Interactive sessions as shipped (2026-07)
+
+The deferred "generic interactive sessions" route became the default execution
+model, motivated by a concrete UX failure: planning steps routinely ended with
+"Open questions for you…" that print-mode (`claude -p`) could never let the user
+answer — the process had already exited. The key discovery that removed the
+"inherently heuristic" completion-detection risk called out above: **three of the
+four agent CLIs provide reliable end-of-turn hooks**, so quiescence heuristics are
+only needed for Gemini.
+
+Architecture (`src/core/interactive.ts`, driven by `engine.ts`'s
+`runInteractiveStep`):
+
+- **`HookBasedSession`** + per-agent `HookAdapter`s. Each adapter generates hook
+  files into `$FLOWS_HOME/tmp/<runId>/<agent>/` and spawns the agent's own TUI in
+  the PTY; a stop-file directory is watched for one JSON payload per completed
+  turn, carrying the last assistant message as clean text (also what the
+  validator judges — no ANSI scraping):
+  - *Claude Code*: `--settings` file defining a `Stop` hook.
+  - *OpenCode*: generated plugin (merged into the user's global config via
+    `OPENCODE_CONFIG`) listening for `session.idle`, fetching the message via the
+    SDK client.
+  - *Codex*: `-c notify=[…]` program receiving `agent-turn-complete`.
+- **`QuiescenceSession`** (Gemini): spawns bare, waits out startup output, types
+  the prompt as the first turn; a turn is complete after ~3s of output silence.
+  Output is cleaned terminal text and may include UI chrome — documented
+  limitation.
+- **Turns, not processes**: validation retries and step chaining
+  (`continueSession`) are typed into the live TUI via bracketed paste. A step's
+  output is every assistant turn joined with `---`.
+- **Awaiting-input gate**: after a passing turn, if the validator flags
+  `needsUserInput` (or the step sets `pauseForReview`), the run parks as
+  `awaiting-input` with the session live; the user attaches and answers in the
+  agent's own UI. Each answered turn is re-validated and the flow auto-advances
+  when nothing further is asked; `f`/`continueRun` advances manually.
+- **Sessions outlive the flow**: finished runs keep their last live session
+  attachable until explicitly closed — the run screen is a terminal multiplexer
+  for agents, as Phase 3 envisioned, but no longer limited to while a step runs.
+- The exec path (`buildAgentCommand` + process-exit completion) remains for
+  `custom` agents only.

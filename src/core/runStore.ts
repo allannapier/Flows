@@ -77,3 +77,47 @@ export function deleteRunsForFlow(flowId: string): void {
 export function newRunId(): string {
   return crypto.randomUUID();
 }
+
+function runsRootDir(): string {
+  const home = process.env.FLOWS_HOME ?? path.join(os.homedir(), ".flows");
+  return path.join(home, "runs");
+}
+
+/** Every flowId that has a runs/ subdirectory on disk. */
+function allFlowIdsWithRuns(): string[] {
+  try {
+    return fs
+      .readdirSync(runsRootDir(), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * At startup, rewrites any persisted run whose status is "running" or
+ * "awaiting-input" but has no corresponding in-memory run to "interrupted".
+ * Without this, a run left behind when Flows exits (or crashes) mid-flow
+ * stays "running" in history forever, since nothing is left to ever finish
+ * it. `isActive` reports whether a given run id currently has a live
+ * in-memory run (from runManager) — called once, before any run has
+ * started, so it should always report false in practice, but the check is
+ * kept for safety/testability.
+ */
+export function sweepStaleRuns(isActive: (runId: string) => boolean): void {
+  for (const flowId of allFlowIdsWithRuns()) {
+    for (const record of listRuns(flowId)) {
+      if ((record.status === "running" || record.status === "awaiting-input") && !isActive(record.id)) {
+        record.status = "interrupted";
+        record.error = "Interrupted — Flows exited while the run was active";
+        record.finishedAt = record.finishedAt ?? new Date().toISOString();
+        try {
+          saveRun(record);
+        } catch {
+          // Best effort — leave the stale record as-is if the write fails.
+        }
+      }
+    }
+  }
+}

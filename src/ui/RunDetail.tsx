@@ -77,7 +77,9 @@ export function RunDetail({ flowId, runId, onBack }: { flowId: string; runId: st
           {run.finishedAt ? ` · finished ${new Date(run.finishedAt).toLocaleString()}` : ""}
           {paramsSummary ? ` · ${paramsSummary}` : ""}
         </text>
-        {run.error && <text fg={colors.error}>{run.error}</text>}
+        {/* Interrupted just means Flows wasn't running to see the run finish — not
+            a failure of the flow itself — so it reads neutral rather than red. */}
+        {run.error && <text fg={run.status === "interrupted" ? colors.textSecondary : colors.error}>{run.error}</text>}
       </box>
       <box flexDirection="row" flexGrow={1} margin={1} gap={1}>
         <box flexDirection="column" border borderStyle="rounded" borderColor={colors.chrome} title="Steps" padding={1} width={36}>

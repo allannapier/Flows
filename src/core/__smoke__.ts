@@ -7,6 +7,7 @@
 
 import assert from "node:assert";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { Flow, FlowStep, RunEvent } from "../types";
 import { deleteFlow, getFlow, listFlows, newFlowId, saveFlow } from "./storage";
@@ -14,6 +15,23 @@ import { renderTemplate } from "./template";
 import { runFlow } from "./engine";
 import { buildAgentCommand } from "./agents";
 import { loadConfig, saveConfig, resolveValidator, maskKey } from "./config";
+import {
+  agentScratchDir,
+  agentSupportsInteractive,
+  buildCodexNotifyScript,
+  buildOpencodeHookPlugin,
+  buildStopHookSettings,
+  cleanupRunScratch,
+  encodeBracketedPaste,
+  extractLastAssistantMessageFromTranscript,
+  mergeOpencodeConfig,
+  parseStopPayload,
+  prepareAgentScratch,
+  runScratchDir,
+  shellQuote,
+  stripJsonComments,
+  watchForNewStopFile,
+} from "./interactive";
 
 async function testStorage(): Promise<void> {
   const id = newFlowId();
@@ -363,6 +381,232 @@ function testMaskKey(): void {
   console.log("maskKey: OK");
 }
 
+function testShellQuote(): void {
+  assert.equal(shellQuote("/plain/path"), "'/plain/path'");
+  assert.equal(shellQuote("/it's/tricky"), `'/it'\\''s/tricky'`);
+  console.log("shellQuote: OK");
+}
+
+function testBuildStopHookSettings(): void {
+  const settings = buildStopHookSettings("/tmp/flows-stops") as {
+    hooks: { Stop: [{ hooks: [{ type: string; command: string }] }] };
+  };
+  const command = settings.hooks.Stop[0].hooks[0].command;
+  assert.equal(command, `cat > '/tmp/flows-stops'/stop-$(date +%s%N).json`);
+  assert.equal(settings.hooks.Stop[0].hooks[0].type, "command");
+  console.log("buildStopHookSettings: OK");
+}
+
+function testParseStopPayload(): void {
+  const payload = parseStopPayload(
+    JSON.stringify({
+      session_id: "abc",
+      transcript_path: "/tmp/t.jsonl",
+      cwd: "/repo",
+      last_assistant_message: "done",
+      hook_event_name: "Stop",
+      stop_hook_active: false,
+    }),
+  );
+  assert.ok(payload);
+  assert.equal(payload?.last_assistant_message, "done");
+  assert.equal(payload?.session_id, "abc");
+
+  assert.equal(parseStopPayload("not json"), undefined);
+  assert.equal(parseStopPayload("null"), undefined);
+  console.log("parseStopPayload: OK");
+}
+
+function testExtractLastAssistantMessageFromTranscript(): void {
+  const lines = [
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }] } }),
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "first reply" }] },
+    }),
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "and then?" }] } }),
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "second reply, part 1" },
+          { type: "text", text: "part 2" },
+        ],
+      },
+    }),
+    "", // trailing blank line should be tolerated
+  ].join("\n");
+
+  const extracted = extractLastAssistantMessageFromTranscript(lines);
+  assert.equal(extracted, "second reply, part 1\npart 2");
+
+  assert.equal(extractLastAssistantMessageFromTranscript(""), undefined);
+  assert.equal(extractLastAssistantMessageFromTranscript("garbage\nnot json either"), undefined);
+
+  console.log("extractLastAssistantMessageFromTranscript: OK");
+}
+
+function testEncodeBracketedPaste(): void {
+  assert.equal(encodeBracketedPaste("hello"), "\x1b[200~hello\x1b[201~");
+  console.log("encodeBracketedPaste: OK");
+}
+
+function testRunScratchLifecycle(): void {
+  const runId = `smoke-${crypto.randomUUID()}`;
+
+  const claudeScratch = prepareAgentScratch(runId, "claude");
+  assert.ok(claudeScratch.dir.endsWith("claude"));
+  assert.equal(agentScratchDir(runId, "claude"), claudeScratch.dir);
+  assert.ok(fs.existsSync(claudeScratch.files.settingsPath!), "settings.json should be written");
+  assert.ok(fs.existsSync(claudeScratch.stopsDir), "stops/ dir should be created");
+  const settingsContent = JSON.parse(fs.readFileSync(claudeScratch.files.settingsPath!, "utf-8"));
+  assert.ok(settingsContent.hooks?.Stop, "settings.json should contain a Stop hook");
+
+  const opencodeScratch = prepareAgentScratch(runId, "opencode");
+  assert.ok(fs.existsSync(opencodeScratch.files.pluginPath!), "flows-hook.js should be written");
+  assert.ok(fs.existsSync(opencodeScratch.files.configPath!), "opencode-config.json should be written");
+  const opencodeConfig = JSON.parse(fs.readFileSync(opencodeScratch.files.configPath!, "utf-8"));
+  assert.ok(
+    Array.isArray(opencodeConfig.plugin) && opencodeConfig.plugin.length === 1,
+    `expected exactly one plugin entry, got: ${JSON.stringify(opencodeConfig.plugin)}`,
+  );
+
+  const codexScratch = prepareAgentScratch(runId, "codex");
+  assert.ok(fs.existsSync(codexScratch.files.notifyScriptPath!), "notify-capture.sh should be written");
+  const mode = fs.statSync(codexScratch.files.notifyScriptPath!).mode & 0o777;
+  assert.equal(mode, 0o755, `expected notify script mode 0755, got ${mode.toString(8)}`);
+
+  const geminiScratch = prepareAgentScratch(runId, "gemini");
+  assert.equal(geminiScratch.stopsDir, "", "gemini (quiescence) scratch should have no stops dir");
+  assert.deepEqual(geminiScratch.files, {});
+  assert.ok(fs.existsSync(geminiScratch.dir), "gemini scratch dir should still be created for cleanup symmetry");
+
+  cleanupRunScratch(runId);
+  assert.ok(!fs.existsSync(runScratchDir(runId)), "run scratch dir should be removed after cleanup");
+
+  // Cleanup of an already-gone dir should not throw.
+  cleanupRunScratch(runId);
+
+  console.log("runScratch lifecycle (all agents): OK");
+}
+
+function testAgentSupportsInteractive(): void {
+  assert.equal(agentSupportsInteractive("claude"), true);
+  assert.equal(agentSupportsInteractive("opencode"), true);
+  assert.equal(agentSupportsInteractive("codex"), true);
+  assert.equal(agentSupportsInteractive("gemini"), true);
+  assert.equal(agentSupportsInteractive("custom"), false);
+  console.log("agentSupportsInteractive: OK");
+}
+
+function testBuildOpencodeHookPlugin(): void {
+  const plugin = buildOpencodeHookPlugin("/tmp/oc-stops");
+  assert.ok(plugin.includes('"/tmp/oc-stops"'), "plugin source should embed the stops dir as a JSON string literal");
+  assert.ok(plugin.includes("session.idle"), "plugin should listen for session.idle");
+  assert.ok(plugin.includes("last_assistant_message"), "plugin payload should use the shared field name");
+  console.log("buildOpencodeHookPlugin: OK");
+}
+
+function testStripJsonComments(): void {
+  const input = [
+    "{",
+    '  // a line comment',
+    '  "a": 1, /* inline block */ "b": "value // not a comment",',
+    '  "c": "quote: \\" still a string"',
+    "}",
+  ].join("\n");
+  const stripped = stripJsonComments(input);
+  const parsed = JSON.parse(stripped);
+  assert.deepEqual(parsed, { a: 1, b: "value // not a comment", c: 'quote: " still a string' });
+  console.log("stripJsonComments: OK");
+}
+
+function testMergeOpencodeConfig(): void {
+  const noGlobal = mergeOpencodeConfig(undefined, "file:///a/flows-hook.js");
+  assert.deepEqual(noGlobal, { plugin: ["file:///a/flows-hook.js"] });
+
+  const withGlobal = mergeOpencodeConfig(
+    JSON.stringify({ $schema: "https://opencode.ai/config.json", plugin: ["file:///existing.js"], theme: "dark" }),
+    "file:///a/flows-hook.js",
+  );
+  assert.deepEqual(withGlobal, {
+    $schema: "https://opencode.ai/config.json",
+    plugin: ["file:///existing.js", "file:///a/flows-hook.js"],
+    theme: "dark",
+  });
+
+  const withNoPluginArray = mergeOpencodeConfig(JSON.stringify({ theme: "dark" }), "file:///a/flows-hook.js");
+  assert.deepEqual(withNoPluginArray, { theme: "dark", plugin: ["file:///a/flows-hook.js"] });
+
+  // Malformed global config falls back to an empty base rather than throwing.
+  const malformed = mergeOpencodeConfig("{not json", "file:///a/flows-hook.js");
+  assert.deepEqual(malformed, { plugin: ["file:///a/flows-hook.js"] });
+
+  console.log("mergeOpencodeConfig: OK");
+}
+
+function testBuildCodexNotifyScript(): void {
+  const script = buildCodexNotifyScript("/tmp/codex-stops");
+  assert.ok(script.startsWith("#!/bin/sh\n"), "notify script should have a shebang");
+  assert.equal(script, `#!/bin/sh\nprintf '%s' "$1" > '/tmp/codex-stops'/notify-$(date +%s%N).json\n`);
+  console.log("buildCodexNotifyScript: OK");
+}
+
+function testParseStopPayloadVariants(): void {
+  // claude
+  const claude = parseStopPayload(JSON.stringify({ last_assistant_message: "hi", transcript_path: "/t.jsonl" }));
+  assert.equal(claude?.last_assistant_message, "hi");
+
+  // opencode (our own plugin's payload shape)
+  const opencode = parseStopPayload(JSON.stringify({ sessionID: "ses_1", last_assistant_message: "done" }));
+  assert.equal(opencode?.last_assistant_message, "done");
+
+  // codex (hyphenated field names)
+  const codex = parseStopPayload(
+    JSON.stringify({ type: "agent-turn-complete", "last-assistant-message": "STEP ONE DONE" }),
+  );
+  assert.equal(codex?.["last-assistant-message"], "STEP ONE DONE");
+
+  console.log("parseStopPayload variants: OK");
+}
+
+async function testWatchForNewStopFile(): Promise<void> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flows-stopwatch-"));
+  try {
+    const seen = new Set<string>();
+
+    // A file already present before watching starts should be picked up
+    // immediately by the initial check (not just future writes).
+    fs.writeFileSync(path.join(dir, "stop-1.json"), "{}", "utf-8");
+    const abort1 = new AbortController();
+    const found1 = await watchForNewStopFile(dir, seen, abort1.signal);
+    assert.equal(found1, "stop-1.json");
+    assert.ok(seen.has("stop-1.json"));
+
+    // A second call should not re-report the same file, and should resolve
+    // once a genuinely new one appears.
+    const abort2 = new AbortController();
+    const wait2 = watchForNewStopFile(dir, seen, abort2.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    fs.writeFileSync(path.join(dir, "stop-2.json"), "{}", "utf-8");
+    const found2 = await wait2;
+    assert.equal(found2, "stop-2.json");
+
+    // Aborting before anything new appears should resolve with null rather
+    // than hanging (no timeouts elsewhere in this mechanism rely on this).
+    const abort3 = new AbortController();
+    const wait3 = watchForNewStopFile(dir, seen, abort3.signal);
+    abort3.abort();
+    const found3 = await wait3;
+    assert.equal(found3, null);
+
+    console.log("watchForNewStopFile: OK");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   if (!process.env.FLOWS_HOME) {
     throw new Error("Set FLOWS_HOME to a temp directory before running this smoke test.");
@@ -377,6 +621,19 @@ async function main(): Promise<void> {
   testConfig();
   testResolveValidator();
   testMaskKey();
+  testShellQuote();
+  testBuildStopHookSettings();
+  testParseStopPayload();
+  testExtractLastAssistantMessageFromTranscript();
+  testEncodeBracketedPaste();
+  testRunScratchLifecycle();
+  await testWatchForNewStopFile();
+  testAgentSupportsInteractive();
+  testBuildOpencodeHookPlugin();
+  testStripJsonComments();
+  testMergeOpencodeConfig();
+  testBuildCodexNotifyScript();
+  testParseStopPayloadVariants();
 
   console.log("OK");
 }

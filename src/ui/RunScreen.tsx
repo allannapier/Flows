@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { extend, useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
-import { decodePasteBytes } from "@opentui/core";
+import { decodePasteBytes, type ScrollBoxRenderable } from "@opentui/core";
 import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
 import { getFlow } from "../core/storage";
-import { cancelRun, getActiveRun, startRun, subscribeRun, type StepUiStatus } from "../core/runManager";
-import type { Flow } from "../types";
+import { cancelRun, closeRun, continueRun, getActiveRun, startRun, subscribeRun, type StepUiStatus } from "../core/runManager";
+import type { Flow, RunStatus } from "../types";
 import { colors, Hint, type KeyHintSpec } from "./theme";
 import { setAttached } from "./attach-state";
 
@@ -47,8 +47,9 @@ const MIN_TERM_COLS = 40;
 const MIN_TERM_ROWS = 10;
 const STEPS_PANE_WIDTH = 36;
 // Steps pane width + row's outer margin (1+1) + pane gap (1) + terminal
-// pane's own left/right border (1+1).
-const HORIZONTAL_CHROME = STEPS_PANE_WIDTH + 2 + 1 + 2;
+// pane's own left/right border (1+1) + the scrollbox's vertical scrollbar
+// column (1), which only appears once there's more output than fits.
+const HORIZONTAL_CHROME = STEPS_PANE_WIDTH + 2 + 1 + 2 + 1;
 // Header line + row's outer margin (1+1) + terminal border (1+1) + status
 // strip + hint bar.
 const VERTICAL_CHROME = 8;
@@ -79,14 +80,31 @@ export function RunScreen({
 
   const [runId, setRunId] = useState<string | null>(initialRunId ?? null);
   const [attachedUi, setAttachedUi] = useState(false);
+  // Whether the detached terminal view has been scrolled away from the live
+  // bottom — drives the pane title's "scrolled" suffix and whether newly
+  // streamed output should keep pulling the view back down (it shouldn't,
+  // while the user is reading scrollback).
+  const [scrolledUp, setScrolledUp] = useState(false);
   const [, forceUpdate] = useReducer((n) => n + 1, 0);
 
   const termRef = useRef<GhosttyTerminalRenderable | null>(null);
+  const scrollBoxRef = useRef<ScrollBoxRenderable | null>(null);
   // How many of the run's feedLog chunks have already been fed to the
   // *current* terminal instance — lets us both replay history on first
   // attach and stream only new chunks afterwards, without re-feeding.
   const fedCountRef = useRef(0);
   const seenRunIdRef = useRef<string | null>(null);
+
+  // Re-derives `scrolledUp` from the scrollbox's actual position — called
+  // after every manual scroll action (the box's own sticky-bottom logic
+  // handles the rest: it keeps pinned to the bottom on new output until the
+  // user scrolls away, then stays put).
+  function syncScrolledUp() {
+    const box = scrollBoxRef.current;
+    if (!box) return;
+    const maxScrollTop = Math.max(0, box.scrollHeight - box.viewport.height);
+    setScrolledUp(maxScrollTop > 0 && box.scrollTop < maxScrollTop - 1);
+  }
 
   // Start a fresh run if we weren't handed an existing one to attach to.
   useEffect(() => {
@@ -109,6 +127,8 @@ export function RunScreen({
     seenRunIdRef.current = runId;
     fedCountRef.current = 0;
     termRef.current?.reset();
+    scrollBoxRef.current?.scrollTo(0);
+    setScrolledUp(false);
   }
 
   // Replay any feedLog chunks not yet fed to this terminal instance. Runs
@@ -160,7 +180,30 @@ export function RunScreen({
       onExit();
       return;
     }
-    if (run?.status === "running") {
+    // Terminal scrollback — detached mode only; while attached these keys
+    // forward straight to the agent's own PTY (handled by the branch above).
+    if (key.name === "pageup") {
+      scrollBoxRef.current?.scrollBy(-1, "viewport");
+      syncScrolledUp();
+      return;
+    }
+    if (key.name === "pagedown") {
+      scrollBoxRef.current?.scrollBy(1, "viewport");
+      syncScrolledUp();
+      return;
+    }
+    if (key.shift && key.name === "up") {
+      scrollBoxRef.current?.scrollBy(-1, "step");
+      syncScrolledUp();
+      return;
+    }
+    if (key.shift && key.name === "down") {
+      scrollBoxRef.current?.scrollBy(1, "step");
+      syncScrolledUp();
+      return;
+    }
+    const runInFlight = run?.status === "running" || run?.status === "awaiting-input";
+    if (runInFlight) {
       if (key.name === "a" && !key.ctrl && !key.meta) {
         setAttachedUi(true);
         setAttached(true);
@@ -170,7 +213,24 @@ export function RunScreen({
         if (runId) cancelRun(runId);
         return;
       }
+      if (run?.status === "awaiting-input" && key.name === "f" && !key.ctrl && !key.meta) {
+        if (runId) continueRun(runId);
+        return;
+      }
       return;
+    }
+    // Finished run whose interactive session is still alive — the agent TUI
+    // stays usable until explicitly closed (or a re-run replaces it).
+    if (run?.hasLiveSession) {
+      if (key.name === "a" && !key.ctrl && !key.meta) {
+        setAttachedUi(true);
+        setAttached(true);
+        return;
+      }
+      if (key.name === "x" && !key.ctrl && !key.meta) {
+        if (runId) closeRun(runId);
+        return;
+      }
     }
     if (key.name === "q" && !key.ctrl && !key.meta) {
       onExit();
@@ -206,6 +266,26 @@ export function RunScreen({
   }
 
   const displayFlow = run.flow;
+
+  const isAwaitingInput = run.status === "awaiting-input";
+  let terminalBorderColor: string = colors.chrome;
+  let terminalTitle: string;
+  if (attachedUi) {
+    terminalBorderColor = colors.accent;
+    terminalTitle = isAwaitingInput
+      ? "Terminal (attached — answer the agent, ctrl+] to detach)"
+      : "Terminal (attached — ctrl+] to detach)";
+  } else if (isAwaitingInput) {
+    terminalBorderColor = colors.warning;
+    terminalTitle = "Terminal (agent is asking — press a to answer)";
+  } else if (run.status !== "running" && run.hasLiveSession) {
+    terminalTitle = "Terminal (session still live — a to attach)";
+  } else {
+    terminalTitle = "Terminal";
+  }
+  if (!attachedUi && scrolledUp) {
+    terminalTitle += " · scrolled ↑ (PgDn to follow)";
+  }
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
@@ -245,10 +325,12 @@ export function RunScreen({
           flexGrow={1}
           border
           borderStyle="rounded"
-          borderColor={attachedUi ? colors.accent : colors.chrome}
-          title={attachedUi ? "Terminal (attached — ctrl+] to detach)" : "Terminal"}
+          borderColor={terminalBorderColor}
+          title={terminalTitle}
         >
-          <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} flexGrow={1} />
+          <scrollbox ref={scrollBoxRef} flexGrow={1} stickyScroll stickyStart="bottom" scrollX={false}>
+            <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} />
+          </scrollbox>
         </box>
       </box>
       {run.statusMessage && (
@@ -271,18 +353,42 @@ export function RunScreen({
           <text fg={colors.warning}>⊘ Flow cancelled</text>
         </box>
       )}
-      <Hint hints={runScreenHints(attachedUi, run.status)} />
+      <Hint hints={runScreenHints(attachedUi, run.status, run.hasLiveSession)} />
     </box>
   );
 }
 
-function runScreenHints(attachedUi: boolean, status: "running" | "complete" | "failed" | "cancelled"): KeyHintSpec[] {
-  if (attachedUi) return [{ keys: "ctrl+]", label: "detach · keys go to agent" }];
+function runScreenHints(attachedUi: boolean, status: RunStatus, hasLiveSession: boolean): KeyHintSpec[] {
+  if (attachedUi) {
+    if (status === "awaiting-input") {
+      return [
+        { keys: "(type)", label: "your answer in the agent TUI" },
+        { keys: "ctrl+]", label: "detach" },
+      ];
+    }
+    return [{ keys: "ctrl+]", label: "detach · keys go to agent" }];
+  }
+  if (status === "awaiting-input") {
+    return [
+      { keys: "a", label: "attach & answer" },
+      { keys: "f", label: "continue flow" },
+      { keys: "c", label: "cancel" },
+      { keys: "esc", label: "back" },
+    ];
+  }
   if (status === "running") {
     return [
       { keys: "a", label: "attach" },
       { keys: "c", label: "cancel" },
       { keys: "esc", label: "back (keeps running)" },
+    ];
+  }
+  if (hasLiveSession) {
+    return [
+      { keys: "a", label: "attach (session live)" },
+      { keys: "x", label: "close session" },
+      { keys: "r", label: "re-run" },
+      { keys: "esc/q", label: "back" },
     ];
   }
   return [

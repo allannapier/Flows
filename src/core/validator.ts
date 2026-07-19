@@ -16,8 +16,13 @@ const VERDICT_SCHEMA = {
   properties: {
     passed: { type: "boolean" },
     feedback: { type: "string" },
+    needsUserInput: { type: "boolean" },
+    // Nullable rather than omittable: OpenAI's strict json_schema mode
+    // requires every property to appear in `required`, so "optional" is
+    // expressed as "may be null" instead of "may be absent".
+    questionsSummary: { type: ["string", "null"] },
   },
-  required: ["passed", "feedback"],
+  required: ["passed", "feedback", "needsUserInput", "questionsSummary"],
   additionalProperties: false,
 } as const;
 
@@ -29,7 +34,19 @@ const SYSTEM_PROMPT =
   "code style, alternate approaches, or anything outside the stated " +
   "expectation. Your feedback should be short, concrete, and actionable for " +
   "a retry: if the task failed, say specifically what is missing or wrong " +
-  "so the agent can fix it on the next attempt.";
+  "so the agent can fix it on the next attempt.\n\n" +
+  "Separately, decide whether the agent's output explicitly asks the user " +
+  "one or more questions or requests a decision before it can proceed — set " +
+  "needsUserInput to true in that case. This is independent of `passed`: a " +
+  "step can pass (it did what was asked) and still need user input (e.g. a " +
+  "planning step that finished its plan but is now asking which option to " +
+  "take). The output may be a multi-turn transcript with turns separated by " +
+  "`---` lines: judge needsUserInput ONLY by how the transcript ENDS. A " +
+  "question asked in an earlier turn that a later turn has answered, " +
+  "acknowledged, or superseded does not count — if the final turn asks " +
+  "nothing and awaits no decision, needsUserInput is false. When " +
+  "needsUserInput is true, set questionsSummary to a short one-sentence " +
+  "summary of what's being asked; otherwise set it to null.";
 
 function buildUserMessage(args: { stepPrompt: string; expectedResult: string; output: string }): string {
   const { stepPrompt, expectedResult, output } = args;
@@ -48,6 +65,20 @@ function buildUserMessage(args: { stepPrompt: string; expectedResult: string; ou
     `Expected result:\n${expectedResult}\n\n` +
     `Agent output:\n${truncatedOutput}${truncationNote}`
   );
+}
+
+/** Defensively coerces a parsed verdict blob into a well-formed
+ * ValidationVerdict — providers can omit fields despite the schema (e.g. a
+ * refusal-adjacent response), so this must never throw on missing data. */
+function normalizeVerdict(parsed: unknown): ValidationVerdict {
+  const v = (parsed ?? {}) as Partial<Record<keyof ValidationVerdict, unknown>>;
+  const questionsSummary = typeof v.questionsSummary === "string" ? v.questionsSummary.trim() : "";
+  return {
+    passed: v.passed === true,
+    feedback: typeof v.feedback === "string" ? v.feedback : "",
+    needsUserInput: v.needsUserInput === true,
+    questionsSummary: questionsSummary !== "" ? questionsSummary : undefined,
+  };
 }
 
 async function validateWithAnthropic(
@@ -96,7 +127,7 @@ async function validateWithAnthropic(
     };
   }
 
-  return JSON.parse(textBlock.text) as ValidationVerdict;
+  return normalizeVerdict(JSON.parse(textBlock.text));
 }
 
 async function validateWithOpenAI(
@@ -145,7 +176,7 @@ async function validateWithOpenAI(
     };
   }
 
-  return JSON.parse(message.content) as ValidationVerdict;
+  return normalizeVerdict(JSON.parse(message.content));
 }
 
 async function validateWithGoogle(
@@ -168,6 +199,8 @@ async function validateWithGoogle(
           properties: {
             passed: { type: Type.BOOLEAN },
             feedback: { type: Type.STRING },
+            needsUserInput: { type: Type.BOOLEAN },
+            questionsSummary: { type: Type.STRING, nullable: true },
           },
           required: ["passed", "feedback"],
         },
@@ -187,7 +220,7 @@ async function validateWithGoogle(
     };
   }
 
-  return JSON.parse(text) as ValidationVerdict;
+  return normalizeVerdict(JSON.parse(text));
 }
 
 export async function validateOutput(args: {

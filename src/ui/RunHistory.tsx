@@ -10,6 +10,8 @@ const STATUS_GLYPH: Record<RunRecord["status"], string> = {
   complete: "✓",
   failed: "✗",
   cancelled: "⊘",
+  "awaiting-input": "⧖",
+  interrupted: "⊟",
 };
 
 const STATUS_COLOR: Record<RunRecord["status"], string> = {
@@ -17,6 +19,11 @@ const STATUS_COLOR: Record<RunRecord["status"], string> = {
   complete: colors.success,
   failed: colors.error,
   cancelled: colors.warning,
+  "awaiting-input": colors.warning,
+  // Interrupted runs aren't a failure of the flow itself — Flows just wasn't
+  // running to see them finish — so this reads as neutral-dead rather than
+  // erroring in red like an actual failure.
+  interrupted: colors.textSecondary,
 };
 
 function formatWhen(iso: string): string {
@@ -103,6 +110,12 @@ export function RunHistory({
         {runs.length === 0 && <text fg={colors.textSecondary}>No runs yet.</text>}
         {runs.map((run, i) => {
           const isLive = !!getActiveRun(run.id);
+          const liveSuffix =
+            isLive && run.status === "running"
+              ? " (live)"
+              : isLive && run.status === "awaiting-input"
+                ? " (awaiting input)"
+                : "";
           const paramsSummary = Object.entries(run.params)
             .map(([k, v]) => `${k}=${v}`)
             .join(", ");
@@ -111,7 +124,7 @@ export function RunHistory({
               {STATUS_GLYPH[run.status]} {formatWhen(run.startedAt)}
               {"  "}
               {run.status}
-              {isLive && run.status === "running" ? " (live)" : ""}
+              {liveSuffix}
               {"  "}
               {formatDuration(run.startedAt, run.finishedAt)}
               {paramsSummary ? `  — ${paramsSummary}` : ""}

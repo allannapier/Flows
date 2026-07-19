@@ -76,6 +76,7 @@ export function StepEditor({
           maxRetries: previousStep?.maxRetries ?? 1,
           workingDir: previousStep?.workingDir,
           continueSession: false,
+          pauseForReview: false,
         },
   );
   const [cursor, setCursor] = useState(0);
@@ -83,6 +84,7 @@ export function StepEditor({
   const [editingAgent, setEditingAgent] = useState(false);
   const [editingValidate, setEditingValidate] = useState(false);
   const [editingContinue, setEditingContinue] = useState(false);
+  const [editingPauseForReview, setEditingPauseForReview] = useState(false);
   const [fieldDraft, setFieldDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [suggest, setSuggest] = useState<SuggestState | null>(null);
@@ -202,6 +204,7 @@ export function StepEditor({
     "expectedResult",
     "validate",
     "continueSession",
+    "pauseForReview",
     "maxRetries",
     "workingDir",
     "save",
@@ -291,6 +294,9 @@ export function StepEditor({
         if (!agentSupportsContinuation(draft.agent)) break;
         setEditingContinue(true);
         break;
+      case "pauseForReview":
+        setEditingPauseForReview(true);
+        break;
       case "maxRetries":
         beginEdit("maxRetries", String(draft.maxRetries));
         break;
@@ -317,6 +323,10 @@ export function StepEditor({
     }
     if (editingContinue) {
       if (key.name === "escape") setEditingContinue(false);
+      return;
+    }
+    if (editingPauseForReview) {
+      if (key.name === "escape") setEditingPauseForReview(false);
       return;
     }
     if (editingField === "prompt" || editingField === "expectedResult") {
@@ -394,7 +404,7 @@ export function StepEditor({
         { keys: "⏎", label: "confirm" },
         { keys: "esc", label: "cancel" },
       ]
-    : editingValidate || editingContinue
+    : editingValidate || editingContinue || editingPauseForReview
       ? [
           { keys: "←→", label: "choose" },
           { keys: "⏎", label: "confirm" },
@@ -416,7 +426,9 @@ export function StepEditor({
           : [
               ...(rows[safeCursor] === "agent"
                 ? [{ keys: "⏎", label: "choose" }]
-                : rows[safeCursor] === "validate" || rows[safeCursor] === "continueSession"
+                : rows[safeCursor] === "validate" ||
+                    rows[safeCursor] === "continueSession" ||
+                    rows[safeCursor] === "pauseForReview"
                   ? [{ keys: "⏎", label: "toggle" }]
                   : rows[safeCursor] === "save"
                     ? [
@@ -574,6 +586,22 @@ export function StepEditor({
             setEditingContinue(false);
           }}
         />
+
+        <TabToggleRow
+          label="Pause for review"
+          selected={isRow("pauseForReview")}
+          editing={editingPauseForReview}
+          value={!!draft.pauseForReview}
+          onSelect={(v) => {
+            setDraft((d) => ({ ...d, pauseForReview: v }));
+            setEditingPauseForReview(false);
+          }}
+        />
+        {isRow("pauseForReview") && !editingPauseForReview && (
+          <text fg={colors.textSecondary}>
+            {"  "}pause after this step so you can answer the agent's questions
+          </text>
+        )}
 
         <FieldRow
           label="Max retries (0-5)"
