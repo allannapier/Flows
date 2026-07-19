@@ -8,7 +8,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 
 - [x] **1. Advanced Flow Steps — Conditional Next-Step Routing**
 - [x] **2. Alert on Step Failure**
-- [ ] **3. Step Stats (turns, tokens, errors, cost)**
+- [x] **3. Step Stats (turns, tokens, errors, cost)**
 
 ---
 
@@ -98,7 +98,7 @@ Give flow authors the option to have the flow stop immediately and present a pro
 
 ### 3. Step Stats (turns, tokens, error count, cost)
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Track and display per-step execution statistics in the run detail view: how many agent turns the step took, total tokens consumed, how many validation errors occurred during retries, and estimated cost.

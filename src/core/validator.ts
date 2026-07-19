@@ -26,6 +26,56 @@ const VERDICT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+/** Token usage reported by a single validator call, split by direction so
+ * cost can be computed with the provider's (asymmetric) input/output rates. */
+export interface ValidatorUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface ValidationResult {
+  verdict: ValidationVerdict;
+  /** Present when the provider reported usage for this call — absent on
+   * thrown/refusal-adjacent paths that never got a response. */
+  usage?: ValidatorUsage;
+  /** Estimated cost in USD of this single call, derived from `usage` and a
+   * static price table. undefined when usage is unavailable or the model
+   * isn't in the table. */
+  costUsd?: number;
+}
+
+interface ModelPrice {
+  inputPer1M: number;
+  outputPer1M: number;
+}
+
+// Static, approximate USD-per-million-tokens table used only to estimate
+// step cost for display — not guaranteed to track providers' current
+// pricing. Matched by case-insensitive prefix against the resolved
+// validator model name, most-specific prefix first (e.g. "gpt-4o-mini"
+// before "gpt-4o"); an unmatched model yields an undefined estimate rather
+// than a misleading number.
+const PRICE_TABLE: Array<{ prefix: string; price: ModelPrice }> = [
+  { prefix: "claude-opus", price: { inputPer1M: 15, outputPer1M: 75 } },
+  { prefix: "claude-sonnet", price: { inputPer1M: 3, outputPer1M: 15 } },
+  { prefix: "claude-haiku", price: { inputPer1M: 0.8, outputPer1M: 4 } },
+  { prefix: "gpt-4o-mini", price: { inputPer1M: 0.15, outputPer1M: 0.6 } },
+  { prefix: "gpt-4o", price: { inputPer1M: 2.5, outputPer1M: 10 } },
+  { prefix: "gpt-4.1-mini", price: { inputPer1M: 0.4, outputPer1M: 1.6 } },
+  { prefix: "gpt-4.1", price: { inputPer1M: 2, outputPer1M: 8 } },
+  { prefix: "o3-mini", price: { inputPer1M: 1.1, outputPer1M: 4.4 } },
+  { prefix: "gemini-2.0-flash", price: { inputPer1M: 0.1, outputPer1M: 0.4 } },
+  { prefix: "gemini-1.5-pro", price: { inputPer1M: 1.25, outputPer1M: 5 } },
+  { prefix: "gemini-1.5-flash", price: { inputPer1M: 0.075, outputPer1M: 0.3 } },
+];
+
+function estimateCostUsd(model: string, usage: ValidatorUsage): number | undefined {
+  const lower = model.toLowerCase();
+  const price = PRICE_TABLE.find((e) => lower.startsWith(e.prefix))?.price;
+  if (!price) return undefined;
+  return (usage.inputTokens / 1_000_000) * price.inputPer1M + (usage.outputTokens / 1_000_000) * price.outputPer1M;
+}
+
 const SYSTEM_PROMPT =
   "You are a strict QA validator for an automated workflow. You will be given " +
   "the task prompt given to an autonomous coding agent, the expected result " +
@@ -81,12 +131,17 @@ function normalizeVerdict(parsed: unknown): ValidationVerdict {
   };
 }
 
+interface InnerResult {
+  verdict: ValidationVerdict;
+  usage?: ValidatorUsage;
+}
+
 async function validateWithAnthropic(
   userMessage: string,
   model: string,
   apiKey: string,
   apiKeyEnvVar: string | undefined,
-): Promise<ValidationVerdict> {
+): Promise<InnerResult> {
   // ANTHROPIC_AUTH_TOKEN is a bearer token, not an API key — construct the
   // client accordingly so it lands on the right auth header.
   const client =
@@ -109,11 +164,19 @@ async function validateWithAnthropic(
     throw new Error(`Validator call failed: ${message}`);
   }
 
+  const usage: ValidatorUsage = {
+    inputTokens: response.usage.input_tokens ?? 0,
+    outputTokens: response.usage.output_tokens ?? 0,
+  };
+
   if (response.stop_reason === "refusal") {
     const reason = response.stop_details?.category ?? "refusal";
     return {
-      passed: false,
-      feedback: `Validator could not produce a verdict (${reason})`,
+      verdict: {
+        passed: false,
+        feedback: `Validator could not produce a verdict (${reason})`,
+      },
+      usage,
     };
   }
 
@@ -122,12 +185,15 @@ async function validateWithAnthropic(
   );
   if (!textBlock) {
     return {
-      passed: false,
-      feedback: `Validator could not produce a verdict (no text response, stop_reason: ${response.stop_reason ?? "unknown"})`,
+      verdict: {
+        passed: false,
+        feedback: `Validator could not produce a verdict (no text response, stop_reason: ${response.stop_reason ?? "unknown"})`,
+      },
+      usage,
     };
   }
 
-  return normalizeVerdict(JSON.parse(textBlock.text));
+  return { verdict: normalizeVerdict(JSON.parse(textBlock.text)), usage };
 }
 
 async function validateWithOpenAI(
@@ -135,7 +201,7 @@ async function validateWithOpenAI(
   model: string,
   apiKey: string,
   baseUrl: string | undefined,
-): Promise<ValidationVerdict> {
+): Promise<InnerResult> {
   const client = new OpenAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) });
 
   let response: OpenAI.Chat.Completions.ChatCompletion;
@@ -156,34 +222,47 @@ async function validateWithOpenAI(
     throw new Error(`Validator call failed: ${message}`);
   }
 
+  const usage: ValidatorUsage | undefined = response.usage
+    ? { inputTokens: response.usage.prompt_tokens ?? 0, outputTokens: response.usage.completion_tokens ?? 0 }
+    : undefined;
+
   const message = response.choices[0]?.message;
   if (!message) {
     return {
-      passed: false,
-      feedback: "Validator could not produce a verdict (no response choices)",
+      verdict: {
+        passed: false,
+        feedback: "Validator could not produce a verdict (no response choices)",
+      },
+      usage,
     };
   }
   if (message.refusal) {
     return {
-      passed: false,
-      feedback: `Validator could not produce a verdict (${message.refusal})`,
+      verdict: {
+        passed: false,
+        feedback: `Validator could not produce a verdict (${message.refusal})`,
+      },
+      usage,
     };
   }
   if (!message.content) {
     return {
-      passed: false,
-      feedback: "Validator could not produce a verdict (no text response)",
+      verdict: {
+        passed: false,
+        feedback: "Validator could not produce a verdict (no text response)",
+      },
+      usage,
     };
   }
 
-  return normalizeVerdict(JSON.parse(message.content));
+  return { verdict: normalizeVerdict(JSON.parse(message.content)), usage };
 }
 
 async function validateWithGoogle(
   userMessage: string,
   model: string,
   apiKey: string,
-): Promise<ValidationVerdict> {
+): Promise<InnerResult> {
   const client = new GoogleGenAI({ apiKey });
 
   let response: Awaited<ReturnType<typeof client.models.generateContent>>;
@@ -211,16 +290,26 @@ async function validateWithGoogle(
     throw new Error(`Validator call failed: ${message}`);
   }
 
+  const usage: ValidatorUsage | undefined = response.usageMetadata
+    ? {
+        inputTokens: response.usageMetadata.promptTokenCount ?? 0,
+        outputTokens: response.usageMetadata.candidatesTokenCount ?? 0,
+      }
+    : undefined;
+
   const text = response.text;
   if (!text) {
     const finishReason = response.candidates?.[0]?.finishReason ?? "unknown";
     return {
-      passed: false,
-      feedback: `Validator could not produce a verdict (no text response, finish reason: ${finishReason})`,
+      verdict: {
+        passed: false,
+        feedback: `Validator could not produce a verdict (no text response, finish reason: ${finishReason})`,
+      },
+      usage,
     };
   }
 
-  return normalizeVerdict(JSON.parse(text));
+  return { verdict: normalizeVerdict(JSON.parse(text)), usage };
 }
 
 export async function validateOutput(args: {
@@ -230,19 +319,27 @@ export async function validateOutput(args: {
   /** Draft config to validate against instead of the persisted one (used by
    * the Settings screen's "Test" button, which must not silently persist). */
   configOverride?: AppConfig;
-}): Promise<ValidationVerdict> {
+}): Promise<ValidationResult> {
   const { stepPrompt, expectedResult, output, configOverride } = args;
   const resolved = resolveValidator(configOverride);
   const userMessage = buildUserMessage({ stepPrompt, expectedResult, output });
 
+  let inner: InnerResult;
   switch (resolved.provider) {
     case "anthropic":
-      return validateWithAnthropic(userMessage, resolved.model, resolved.apiKey, resolved.apiKeyEnvVar);
+      inner = await validateWithAnthropic(userMessage, resolved.model, resolved.apiKey, resolved.apiKeyEnvVar);
+      break;
     case "openai":
-      return validateWithOpenAI(userMessage, resolved.model, resolved.apiKey, undefined);
+      inner = await validateWithOpenAI(userMessage, resolved.model, resolved.apiKey, undefined);
+      break;
     case "custom":
-      return validateWithOpenAI(userMessage, resolved.model, resolved.apiKey, resolved.baseUrl);
+      inner = await validateWithOpenAI(userMessage, resolved.model, resolved.apiKey, resolved.baseUrl);
+      break;
     case "google":
-      return validateWithGoogle(userMessage, resolved.model, resolved.apiKey);
+      inner = await validateWithGoogle(userMessage, resolved.model, resolved.apiKey);
+      break;
   }
+
+  const costUsd = inner.usage ? estimateCostUsd(resolved.model, inner.usage) : undefined;
+  return { verdict: inner.verdict, usage: inner.usage, costUsd };
 }

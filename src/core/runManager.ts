@@ -212,6 +212,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
             rec.status = "done";
             rec.attempts = run.attempts[e.stepIndex] ?? 1;
             rec.output = e.output;
+            rec.stats = e.stats;
           }
           break;
         }
@@ -223,6 +224,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
             rec.status = "failed";
             rec.attempts = run.attempts[e.stepIndex] ?? 1;
             rec.error = e.error;
+            rec.stats = e.stats;
           }
           break;
         }
