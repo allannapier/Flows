@@ -242,12 +242,21 @@ export function FlowEditor({
     const priorStepNames =
       stepFormIndex === null ? draft.steps.map((s) => s.name) : draft.steps.slice(0, stepFormIndex).map((s) => s.name);
     const previousStep = stepFormIndex === null ? draft.steps[draft.steps.length - 1] : undefined;
+    // Full step name list (in current order), used by routing dropdowns so
+    // the author can pick any target — forward or backward — regardless of
+    // where this step sits in the flow. When appending, the pending step
+    // isn't in draft.steps yet, so it isn't reachable from itself as a
+    // routing target — which is fine.
+    const editingIndex = stepFormIndex ?? draft.steps.length;
+    const allStepNames = draft.steps.map((s, i) => (i === stepFormIndex ? existing?.name ?? s.name : s.name));
     return (
       <StepEditor
         step={existing}
         parameters={draft.parameters}
         priorStepNames={priorStepNames}
         previousStep={previousStep}
+        allStepNames={allStepNames}
+        editingIndex={editingIndex}
         onCancel={() => setMode("browse")}
         onSave={(s) => {
           setDraft((d) => {

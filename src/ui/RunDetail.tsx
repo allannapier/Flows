@@ -84,12 +84,18 @@ export function RunDetail({ flowId, runId, onBack }: { flowId: string; runId: st
       <box flexDirection="row" flexGrow={1} margin={1} gap={1}>
         <box flexDirection="column" border borderStyle="rounded" borderColor={colors.chrome} title="Steps" padding={1} width={36}>
           {steps.length === 0 && <text fg={colors.textSecondary}>No steps.</text>}
-          {steps.map((s, i) => (
-            <SimpleRow key={s.stepId} selected={safeCursor === i} fg={STATUS_COLOR[s.status]}>
-              {STATUS_SYMBOL[s.status]} {s.stepName}
-              {s.attempts > 1 ? ` (x${s.attempts})` : ""}
-            </SimpleRow>
-          ))}
+          {steps.map((s, i) => {
+            const execs = s.executions ?? 0;
+            const executionsBadge = execs > 1 ? ` x${execs}` : "";
+            const attemptBadge = s.attempts > 1 ? ` a${s.attempts}` : "";
+            return (
+              <SimpleRow key={s.stepId} selected={safeCursor === i} fg={STATUS_COLOR[s.status]}>
+                {STATUS_SYMBOL[s.status]} {s.stepName}
+                {executionsBadge}
+                {attemptBadge}
+              </SimpleRow>
+            );
+          })}
         </box>
         <box
           flexDirection="column"

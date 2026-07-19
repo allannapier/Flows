@@ -305,16 +305,23 @@ export function RunScreen({
           {displayFlow.steps.map((step, i) => {
             const status = run.stepStatuses[i] ?? "pending";
             const attempt = run.attempts[i] ?? 1;
+            const executions = run.executions[i] ?? 0;
             const running = status === "running" || status === "validating" || status === "retrying";
             const bg = running ? colors.selectionBg : undefined;
             const fg = running ? colors.selectionFg : STATUS_COLOR[status];
+            // Show "x2" once a routing jump has re-entered the step; still
+            // show retry attempts within the current execution as "a2" so
+            // both signals are readable at a glance without colliding.
+            const executionsBadge = executions > 1 ? ` x${executions}` : "";
+            const attemptBadge = attempt > 1 ? ` a${attempt}` : "";
             return (
               <box key={step.id} flexDirection="row" backgroundColor={bg}>
                 <text fg={fg} bg={bg}>
                   {/* status symbol doubles as the marker; the bar shows selection */}
                   {" "}
                   {STATUS_SYMBOL[status]} {step.name}
-                  {attempt > 1 ? ` (x${attempt})` : ""}
+                  {executionsBadge}
+                  {attemptBadge}
                 </text>
               </box>
             );
