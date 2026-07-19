@@ -28,6 +28,12 @@ export interface RunStatusMessage {
   kind: "secondary" | "success" | "warning" | "error";
 }
 
+export interface PendingAlert {
+  stepIndex: number;
+  stepName: string;
+  error: string;
+}
+
 export interface ActiveRun {
   id: string;
   flowId: string;
@@ -43,6 +49,11 @@ export interface ActiveRun {
   executions: number[];
   statusMessage: RunStatusMessage | null;
   finalError: string | null;
+  /** Set while a step's `alertOnFailure` gate is open — the run is paused
+   * waiting for the UI to call acknowledgeAlert(). Cleared once
+   * acknowledged (or, defensively, whenever the run moves on to another
+   * event that implies the gate is no longer relevant). */
+  pendingAlert: PendingAlert | null;
   /** Raw chunks fed to the agent's PTY output, in order — replayed into a
    * freshly-mounted terminal when a screen (re)attaches to this run. */
   feedLog: string[];
@@ -122,6 +133,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
     executions: flow.steps.map(() => 0),
     statusMessage: null,
     finalError: null,
+    pendingAlert: null,
     feedLog: [],
     startedAt: new Date().toISOString(),
     hasLiveSession: false,
@@ -214,6 +226,10 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           }
           break;
         }
+        case "step-alert":
+          run.pendingAlert = { stepIndex: e.stepIndex, stepName: e.stepName, error: e.error };
+          run.feedLog.push(`\r\n\x1b[2m[alert] ${e.stepName} failed: ${e.error}\x1b[0m\r\n`);
+          break;
         case "session-note":
           run.statusMessage = { text: e.note, kind: "warning" };
           run.feedLog.push(`\r\n\x1b[2m[note] ${e.note}\x1b[0m\r\n`);
@@ -228,15 +244,18 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           // The target step is about to (re-)execute — reset its UI status
           // so the steps pane doesn't keep showing a stale ✓/✗ for it.
           run.stepStatuses[e.toIndex] = "pending";
+          run.pendingAlert = null;
           break;
         }
         case "session-live-changed":
           run.hasLiveSession = e.live;
           break;
         case "flow-complete":
+          run.pendingAlert = null;
           persist("complete");
           break;
         case "flow-failed":
+          run.pendingAlert = null;
           persist(e.error === "Cancelled by user" ? "cancelled" : "failed", e.error);
           break;
       }
@@ -261,6 +280,18 @@ export function cancelRun(runId: string): void {
  * currently gated) — the explicit "proceed now" action from the UI. */
 export function continueRun(runId: string): void {
   active.get(runId)?.handle.continueFlow();
+}
+
+/** Dismisses a run's open step-alert gate (no-op if it isn't currently
+ * gated) — the explicit "Dismiss" action from the UI's blocking alert
+ * overlay. Clears the run's pendingAlert immediately rather than waiting
+ * for a follow-up event, so the overlay closes right away. */
+export function acknowledgeAlert(runId: string): void {
+  const run = active.get(runId);
+  if (!run) return;
+  run.pendingAlert = null;
+  run.handle.acknowledgeAlert();
+  notify(runId);
 }
 
 /** Kills any live interactive session for a run and cleans up its scratch

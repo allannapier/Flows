@@ -295,6 +295,69 @@ async function testEngineWrite(): Promise<void> {
   console.log("engine write (attach interactivity): OK");
 }
 
+async function testEngineAlertOnFailure(): Promise<void> {
+  const flow: Flow = {
+    id: newFlowId(),
+    name: "Alert On Failure Flow",
+    description: "One-step flow whose step always fails, with alertOnFailure set.",
+    parameters: [],
+    steps: [
+      {
+        id: "step-1",
+        name: "always-fails",
+        agent: "custom",
+        customCommand: "exit 1",
+        prompt: "unused",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+        alertOnFailure: true,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+
+  const events: RunEvent[] = [];
+  let sawAlert = false;
+  const handle = runFlow(flow, {}, (e) => {
+    events.push(e);
+    if (e.type === "step-alert") sawAlert = true;
+  });
+
+  const deadline = Date.now() + 5000;
+  while (!sawAlert && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(sawAlert, "expected step-alert to be emitted");
+  assert.ok(
+    events.some((e) => e.type === "step-failed"),
+    "step-failed should already have been emitted alongside step-alert",
+  );
+  assert.ok(
+    !events.some((e) => e.type === "flow-failed"),
+    "flow-failed should not fire until the alert is acknowledged",
+  );
+
+  // Give the (already-resolved) engine a beat to prove it's genuinely
+  // parked, not just about to emit flow-failed on its own.
+  await new Promise((r) => setTimeout(r, 100));
+  assert.ok(
+    !events.some((e) => e.type === "flow-failed"),
+    "flow-failed should still not have fired without acknowledgeAlert()",
+  );
+
+  handle.acknowledgeAlert();
+  await handle.done;
+
+  assert.ok(
+    events.some((e) => e.type === "flow-failed"),
+    `expected flow-failed after acknowledgeAlert(), got: ${events.map((e) => e.type).join(",")}`,
+  );
+
+  console.log("engine alertOnFailure: OK");
+}
+
 function testConfig(): void {
   const home = process.env.FLOWS_HOME!;
   const configFile = path.join(home, "config.json");
@@ -618,6 +681,7 @@ async function main(): Promise<void> {
   testBuildAgentCommand();
   await testEngineContinuation();
   await testEngineWrite();
+  await testEngineAlertOnFailure();
   testConfig();
   testResolveValidator();
   testMaskKey();

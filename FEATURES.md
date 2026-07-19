@@ -7,7 +7,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 ## Feature List
 
 - [x] **1. Advanced Flow Steps — Conditional Next-Step Routing**
-- [ ] **2. Alert on Step Failure**
+- [x] **2. Alert on Step Failure**
 - [ ] **3. Step Stats (turns, tokens, errors, cost)**
 
 ---
@@ -70,7 +70,7 @@ Allow each step to define routing rules that control which step executes next, b
 
 ### 2. Alert on Step Failure
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Give flow authors the option to have the flow stop immediately and present a prominent alert to the user when a specific step fails (validation fails and retries are exhausted), rather than silently marking the flow as failed. This is an opt-in, per-step toggle.

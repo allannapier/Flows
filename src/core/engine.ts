@@ -116,6 +116,9 @@ export function runFlow(
   // Set while an awaiting-input gate is open; continueFlow() aborts this to
   // signal "leave the gate now".
   let gateAbort: AbortController | null = null;
+  // Set while a step-alert gate is open (see reportStepFailure);
+  // acknowledgeAlert() aborts this to signal "leave the gate now".
+  let alertAbort: AbortController | null = null;
   // Set whenever the engine is waiting on a turn (gate or not); cancel()
   // aborts this so a poll loop doesn't have to wait for the (already killed)
   // process to exit.
@@ -210,6 +213,40 @@ export function runFlow(
       onEvent({ type: "flow-failed", error: "Cancelled by user" });
     }
     return cancelled;
+  }
+
+  /** Reports a step's exhausted-retries failure: emits "step-failed" and,
+   * when the step opts into `alertOnFailure`, pauses the run behind a
+   * blocking "step-alert" gate until the UI calls RunHandle.acknowledgeAlert()
+   * before returning the failure outcome to the caller. Steps without the
+   * flag return immediately, exactly as before this feature existed. */
+  async function reportStepFailure(
+    step: Flow["steps"][number],
+    stepIndex: number,
+    error: string,
+  ): Promise<"cancelled" | { outcome: "failed"; error: string }> {
+    onEvent({ type: "step-failed", stepIndex, error });
+    if (!step.alertOnFailure) return { outcome: "failed", error };
+
+    onEvent({ type: "step-alert", stepIndex, stepName: step.name, error });
+    const abort = new AbortController();
+    alertAbort = abort;
+    waitAbort = abort;
+    await new Promise<void>((resolve) => {
+      if (abort.signal.aborted) {
+        resolve();
+        return;
+      }
+      abort.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    if (alertAbort === abort) alertAbort = null;
+    if (waitAbort === abort) waitAbort = null;
+
+    if (cancelled) {
+      emitCancelledIfNeeded();
+      return "cancelled";
+    }
+    return { outcome: "failed", error };
   }
 
   async function execute(): Promise<void> {
@@ -437,8 +474,7 @@ export function runFlow(
           retryFeedback = feedback;
           continue;
         }
-        onEvent({ type: "step-failed", stepIndex, error: feedback });
-        return { outcome: "failed", error: feedback };
+        return reportStepFailure(step, stepIndex, feedback);
       }
 
       if (step.validate) {
@@ -474,8 +510,7 @@ export function runFlow(
             retryFeedback = verdict.feedback;
             continue;
           }
-          onEvent({ type: "step-failed", stepIndex, error: verdict.feedback });
-          return { outcome: "failed", error: verdict.feedback };
+          return reportStepFailure(step, stepIndex, verdict.feedback);
         }
       }
 
@@ -624,8 +659,7 @@ export function runFlow(
             onEvent({ type: "step-start", stepIndex, stepName: step.name, agent: step.agent, attempt });
             continue;
           }
-          onEvent({ type: "step-failed", stepIndex, error: verdict.feedback });
-          return { outcome: "failed", error: verdict.feedback };
+          return reportStepFailure(step, stepIndex, verdict.feedback);
         }
       }
 
@@ -760,6 +794,12 @@ export function runFlow(
       if (!gateAbort) return;
       const abort = gateAbort;
       gateAbort = null;
+      abort.abort();
+    },
+    acknowledgeAlert(): void {
+      if (!alertAbort) return;
+      const abort = alertAbort;
+      alertAbort = null;
       abort.abort();
     },
     hasLiveSession(): boolean {

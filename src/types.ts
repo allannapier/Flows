@@ -84,6 +84,14 @@ export interface FlowStep {
    * (retries exhausted) fail the whole flow.
    */
   routing?: StepRouting;
+  /**
+   * When true, a failure of this step (validation fails and retries are
+   * exhausted) pauses the run and shows a blocking alert to the user
+   * instead of silently proceeding straight to the flow-failed outcome
+   * (or a routing jump). The run resumes — and is then marked failed, or
+   * routed, as normal — once the user dismisses the alert.
+   */
+  alertOnFailure?: boolean;
 }
 
 export interface Flow {
@@ -129,6 +137,11 @@ export type RunEvent =
    * looping/branching on failure. Purely informational; the target step's
    * own "step-start" fires immediately after. */
   | { type: "step-jump"; fromIndex: number; toIndex: number; reason: "success" | "failure" }
+  /** A step with `alertOnFailure` exhausted its retries. The run pauses
+   * (after already emitting "step-failed") until the UI acknowledges via
+   * RunHandle.acknowledgeAlert(), at which point the run resumes and is
+   * marked failed (or routed to another step) as normal. */
+  | { type: "step-alert"; stepIndex: number; stepName: string; error: string }
   /** A claude step's turn finished and the flow is now paused waiting on the
    * user — either the validator detected the agent is asking a question
    * (needsUserInput) or the step has pauseForReview. `message` is a
@@ -162,6 +175,10 @@ export interface RunHandle {
    * step, keeping whatever output has accumulated so far for the gated
    * step. No-op when the run isn't currently gated. */
   continueFlow(): void;
+  /** Dismisses a currently-open "step-alert" gate (see RunEvent), letting
+   * the run resume and proceed to its normal failure/routing handling.
+   * No-op when the run isn't currently gated on an alert. */
+  acknowledgeAlert(): void;
   /** True if an interactive agent session is currently alive for this run
    * — including after the flow has finished, since a finished flow's last
    * interactive session is kept alive for the user to keep chatting with
