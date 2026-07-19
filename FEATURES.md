@@ -6,7 +6,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 
 ## Feature List
 
-- [ ] **1. Advanced Flow Steps — Conditional Next-Step Routing**
+- [x] **1. Advanced Flow Steps — Conditional Next-Step Routing**
 - [ ] **2. Alert on Step Failure**
 - [ ] **3. Step Stats (turns, tokens, errors, cost)**
 
@@ -18,7 +18,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 
 ### 1. Advanced Flow Steps — Conditional Next-Step Routing
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Allow each step to define routing rules that control which step executes next, based on the validation outcome of that step. Today steps always execute sequentially (step 1 → 2 → 3 …). This feature makes it possible to branch: on success go to step 4, on failure go back to step 2 and re-run it, and so on.

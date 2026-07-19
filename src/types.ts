@@ -24,6 +24,21 @@ export interface FlowParameter {
   choices?: string[];
 }
 
+export interface StepRouting {
+  /** 0-based index of the step to jump to when this step passes validation.
+   *  If absent, continue to the next sequential step (current behaviour). */
+  onSuccess?: number;
+  /** 0-based index of the step to jump to when this step fails validation
+   *  and has exhausted retries.
+   *  If absent, the flow fails as today. */
+  onFailure?: number;
+  /**
+   * Maximum number of times a backward jump (onFailure pointing to an
+   * earlier step) is allowed before the flow gives up and treats it as a
+   * hard failure.  Defaults to 3. */
+  maxJumps?: number;
+}
+
 export interface FlowStep {
   id: string;
   name: string;
@@ -63,6 +78,12 @@ export interface FlowStep {
    * flow just proceeds with a note.
    */
   pauseForReview?: boolean;
+  /**
+   * Optional conditional next-step routing. When absent, the step behaves
+   * as before: on success proceed to the next sequential step; on failure
+   * (retries exhausted) fail the whole flow.
+   */
+  routing?: StepRouting;
 }
 
 export interface Flow {
@@ -103,6 +124,11 @@ export type RunEvent =
   | { type: "step-complete"; stepIndex: number; output: string }
   | { type: "step-failed"; stepIndex: number; error: string }
   | { type: "session-note"; stepIndex: number; note: string }
+  /** The engine's step pointer jumped non-sequentially because of a step's
+   * `routing` configuration — either forward-skipping on success or
+   * looping/branching on failure. Purely informational; the target step's
+   * own "step-start" fires immediately after. */
+  | { type: "step-jump"; fromIndex: number; toIndex: number; reason: "success" | "failure" }
   /** A claude step's turn finished and the flow is now paused waiting on the
    * user — either the validator detected the agent is asking a question
    * (needsUserInput) or the step has pauseForReview. `message` is a
@@ -179,6 +205,11 @@ export interface RunStepRecord {
   stepName: string;
   status: "pending" | "done" | "failed";
   attempts: number;
+  /** How many times this step has been (re-)executed by the engine because
+   * of `routing` jumps (forward skips do not increment; only entering the
+   * step does). 1 for a normal single execution, more when an earlier step
+   * looped back into it. Absent on records from before this field existed. */
+  executions?: number;
   /** Cleaned (non-ANSI) output text, present once the step has completed. */
   output?: string;
   error?: string;

@@ -16,7 +16,7 @@ import {
   type KeyHintSpec,
 } from "./theme";
 
-type TextField = "name" | "customCommand" | "prompt" | "expectedResult" | "maxRetries" | "workingDir";
+type TextField = "name" | "customCommand" | "prompt" | "expectedResult" | "maxRetries" | "workingDir" | "onSuccess" | "onFailure" | "maxJumps";
 
 /** Fields whose value is a {{...}} template that can be autocompleted. */
 type PlaceholderField = "prompt" | "expectedResult";
@@ -41,11 +41,23 @@ function newStepId(): string {
   return crypto.randomUUID();
 }
 
+/** Human-readable rendering of a routing target for the FieldRow's value
+ * text — "#3 (Review changes)" when a target step name is known,
+ * "#3" when the routing target's index is out of range of the (possibly
+ * still-being-authored) flow, and "" when no rule is set. */
+function routingTargetLabel(idx: number | undefined, stepNames: string[]): string {
+  if (idx === undefined) return "";
+  const name = stepNames[idx];
+  return name ? `#${idx + 1} (${name})` : `#${idx + 1}`;
+}
+
 export function StepEditor({
   step,
   parameters,
   priorStepNames,
   previousStep,
+  allStepNames = [],
+  editingIndex,
   onSave,
   onCancel,
 }: {
@@ -59,6 +71,14 @@ export function StepEditor({
    * its agent/workingDir/validate/maxRetries are reused as defaults so
    * consecutive similar steps don't require retyping them. */
   previousStep?: FlowStep;
+  /** Full ordered list of step names in the enclosing flow, used by
+   * routing hints so the author can see which step index maps to which
+   * name when picking On-success / On-failure targets. Empty when unknown. */
+  allStepNames?: string[];
+  /** 0-based position this step will occupy in the flow — used by routing
+   * validation to warn about self-loops. Defaults to `allStepNames.length`
+   * (appending) when omitted. */
+  editingIndex?: number;
   onSave: (step: FlowStep) => void;
   onCancel: () => void;
 }) {
@@ -207,6 +227,9 @@ export function StepEditor({
     "pauseForReview",
     "maxRetries",
     "workingDir",
+    "onSuccess",
+    "onFailure",
+    "maxJumps",
     "save",
     "cancel",
   );
@@ -217,7 +240,71 @@ export function StepEditor({
     setEditingField(field);
   }
 
+  const effectiveEditingIndex = editingIndex ?? allStepNames.length;
+  const totalStepsIncludingSelf = Math.max(allStepNames.length, effectiveEditingIndex + 1);
+
+  /** Parse a user-entered 1-based step number into a 0-based routing index,
+   * or `undefined` for blank (= "no routing rule"). Returns `null` when the
+   * input is present but invalid (out of range / non-numeric) so the caller
+   * can surface an error rather than silently clearing the field. */
+  function parseRoutingTarget(raw: string): number | undefined | null {
+    const trimmed = raw.trim();
+    if (trimmed === "") return undefined;
+    const n = Number.parseInt(trimmed, 10);
+    if (Number.isNaN(n)) return null;
+    const idx = n - 1;
+    if (idx < 0 || idx >= totalStepsIncludingSelf) return null;
+    return idx;
+  }
+
+  function updateRouting(patch: Partial<NonNullable<FlowStep["routing"]>>): (d: FlowStep) => FlowStep {
+    return (d) => {
+      const merged = { ...(d.routing ?? {}), ...patch };
+      // Drop keys explicitly set to undefined so the persisted routing
+      // object stays clean (and becomes fully absent when everything is
+      // cleared).
+      for (const [k, v] of Object.entries(merged)) {
+        if (v === undefined) delete (merged as Record<string, unknown>)[k];
+      }
+      const hasAny = Object.keys(merged).length > 0;
+      return { ...d, routing: hasAny ? merged : undefined };
+    };
+  }
+
   function commitField() {
+    // Pre-validate routing fields (which can reject the input) before
+    // touching draft state. Other fields are lenient and normalize
+    // internally, so they stay inside the setDraft reducer as before.
+    if (editingField === "onSuccess" || editingField === "onFailure") {
+      const parsed = parseRoutingTarget(fieldDraft);
+      if (parsed === null) {
+        setError(
+          `${editingField === "onSuccess" ? "On-success" : "On-failure"} target must be a step number between 1 and ${totalStepsIncludingSelf}`,
+        );
+        return;
+      }
+      const key = editingField;
+      setDraft(updateRouting({ [key]: parsed } as Partial<NonNullable<FlowStep["routing"]>>));
+      setError(null);
+      setEditingField(null);
+      return;
+    }
+    if (editingField === "maxJumps") {
+      const trimmed = fieldDraft.trim();
+      if (trimmed === "") {
+        setDraft(updateRouting({ maxJumps: undefined }));
+      } else {
+        const n = Number.parseInt(trimmed, 10);
+        if (Number.isNaN(n) || n < 1 || n > 20) {
+          setError("Max failure jumps must be an integer between 1 and 20");
+          return;
+        }
+        setDraft(updateRouting({ maxJumps: n }));
+      }
+      setError(null);
+      setEditingField(null);
+      return;
+    }
     setDraft((d) => {
       switch (editingField) {
         case "name":
@@ -234,6 +321,7 @@ export function StepEditor({
           return d;
       }
     });
+    setError(null);
     setEditingField(null);
   }
 
@@ -263,6 +351,21 @@ export function StepEditor({
     if (draft.agent === "custom" && !draft.customCommand?.trim()) {
       setError("Custom command is required for the custom agent");
       setCursor(rows.indexOf("customCommand"));
+      return;
+    }
+    // Guard against a routing rule that targets this step itself — that
+    // would produce an unbreakable loop with no forward progress. Backward
+    // (or forward) jumps to *other* steps are fine; maxJumps bounds any
+    // failure-loop.
+    const selfIdx = effectiveEditingIndex;
+    if (draft.routing?.onSuccess === selfIdx) {
+      setError("On-success routing can't target this same step (that's an infinite loop)");
+      setCursor(rows.indexOf("onSuccess"));
+      return;
+    }
+    if (draft.routing?.onFailure === selfIdx) {
+      setError("On-failure routing can't target this same step (that's an infinite loop)");
+      setCursor(rows.indexOf("onFailure"));
       return;
     }
     onSave({ ...draft, name: draft.name.trim() });
@@ -302,6 +405,15 @@ export function StepEditor({
         break;
       case "workingDir":
         beginEdit("workingDir", draft.workingDir ?? "");
+        break;
+      case "onSuccess":
+        beginEdit("onSuccess", draft.routing?.onSuccess !== undefined ? String(draft.routing.onSuccess + 1) : "");
+        break;
+      case "onFailure":
+        beginEdit("onFailure", draft.routing?.onFailure !== undefined ? String(draft.routing.onFailure + 1) : "");
+        break;
+      case "maxJumps":
+        beginEdit("maxJumps", draft.routing?.maxJumps !== undefined ? String(draft.routing.maxJumps) : "");
         break;
       case "save":
         trySave();
@@ -623,6 +735,39 @@ export function StepEditor({
           onSubmit={commitField}
           value={draft.workingDir ?? ""}
           placeholder="(cwd)"
+        />
+
+        <FieldRow
+          label="On success, go to step # (blank = next)"
+          selected={isRow("onSuccess")}
+          editing={editingField === "onSuccess"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={routingTargetLabel(draft.routing?.onSuccess, allStepNames)}
+          placeholder="(next)"
+        />
+
+        <FieldRow
+          label="On failure, go to step # (blank = fail flow)"
+          selected={isRow("onFailure")}
+          editing={editingField === "onFailure"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={routingTargetLabel(draft.routing?.onFailure, allStepNames)}
+          placeholder="(fail)"
+        />
+
+        <FieldRow
+          label="Max failure jumps (1-20; blank = 3)"
+          selected={isRow("maxJumps")}
+          editing={editingField === "maxJumps"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.routing?.maxJumps !== undefined ? String(draft.routing.maxJumps) : ""}
+          placeholder="3"
         />
 
         <ButtonRow

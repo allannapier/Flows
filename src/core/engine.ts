@@ -255,16 +255,36 @@ export function runFlow(
     // fresh even when continueSession=true. Only used by the exec path —
     // interactive agents use liveSessions instead.
     const sessionStarted = new Set<string>();
+    // Per (originStepId -> targetIndex) counter for onFailure jumps — used
+    // to enforce `routing.maxJumps` (default 3) so a step that keeps failing
+    // can't loop forever.
+    const failureJumpCounts = new Map<string, number>();
 
-    for (let stepIndex = 0; stepIndex < flow.steps.length; stepIndex++) {
+    const isValidStepIndex = (i: unknown): i is number =>
+      typeof i === "number" && Number.isInteger(i) && i >= 0 && i < flow.steps.length;
+
+    function tryRouteFailure(fromIndex: number): number | null {
+      const step = flow.steps[fromIndex]!;
+      const target = step.routing?.onFailure;
+      if (!isValidStepIndex(target)) return null;
+      const maxJumps = step.routing?.maxJumps ?? 3;
+      const key = `${step.id}->${target}`;
+      const count = failureJumpCounts.get(key) ?? 0;
+      if (count >= maxJumps) return null;
+      failureJumpCounts.set(key, count + 1);
+      onEvent({ type: "step-jump", fromIndex, toIndex: target, reason: "failure" });
+      return target;
+    }
+
+    let stepIndex = 0;
+    while (stepIndex < flow.steps.length) {
       if (cancelled) {
         emitCancelledIfNeeded();
         return;
       }
 
-      const step = flow.steps[stepIndex];
+      const step = flow.steps[stepIndex]!;
       const resolvedCwd = step.workingDir || process.cwd();
-      const sessionKey = `${step.agent}::${resolvedCwd}`;
       const interactive = agentSupportsInteractive(step.agent);
 
       if (step.continueSession && !interactive && !agentSupportsContinuation(step.agent)) {
@@ -282,153 +302,190 @@ export function runFlow(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         onEvent({ type: "step-failed", stepIndex, error: message });
+        const routed = tryRouteFailure(stepIndex);
+        if (routed !== null) {
+          stepIndex = routed;
+          continue;
+        }
         onEvent({ type: "flow-failed", error: message });
         return;
       }
 
+      let stepResult: "success" | "cancelled" | { outcome: "failed"; error: string };
       if (interactive) {
-        const outcome = await runInteractiveStep({ step, stepIndex, basePrompt, resolvedCwd, stepOutputs });
-        if (outcome !== "success") return;
+        stepResult = await runInteractiveStep({ step, stepIndex, basePrompt, resolvedCwd, stepOutputs });
+      } else {
+        stepResult = await runExecStep({ step, stepIndex, basePrompt, resolvedCwd, stepOutputs, sessionStarted });
+      }
+
+      if (stepResult === "cancelled") return;
+
+      if (stepResult === "success") {
+        const target = step.routing?.onSuccess;
+        if (isValidStepIndex(target) && target !== stepIndex + 1) {
+          onEvent({ type: "step-jump", fromIndex: stepIndex, toIndex: target, reason: "success" });
+          stepIndex = target;
+        } else {
+          stepIndex++;
+        }
         continue;
       }
 
-      const maxAttempts = 1 + Math.max(0, step.maxRetries);
-      let retryFeedback: string | undefined;
-      let stepSucceeded = false;
-
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (cancelled) {
-          emitCancelledIfNeeded();
-          return;
-        }
-
-        onEvent({
-          type: "step-start",
-          stepIndex,
-          stepName: step.name,
-          agent: step.agent,
-          attempt,
-        });
-
-        const promptForAttempt =
-          retryFeedback !== undefined
-            ? basePrompt + RETRY_CONTEXT_TEMPLATE(retryFeedback)
-            : basePrompt;
-
-        const effectiveContinue =
-          step.continueSession === true &&
-          agentSupportsContinuation(step.agent) &&
-          sessionStarted.has(sessionKey);
-
-        let cmd: string[];
-        let extraEnv: Record<string, string> | undefined;
-        try {
-          const built = buildAgentCommand(step, promptForAttempt, effectiveContinue);
-          cmd = built.cmd;
-          extraEnv = built.env;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          onEvent({ type: "step-failed", stepIndex, error: message });
-          onEvent({ type: "flow-failed", error: message });
-          return;
-        }
-
-        const attemptCols = liveCols;
-        const attemptRows = liveRows;
-
-        const session = new AgentSession({
-          cmd,
-          env: extraEnv,
-          cwd: resolvedCwd,
-          cols: attemptCols,
-          rows: attemptRows,
-          onData: (chunk) => onEvent({ type: "agent-output", stepIndex, chunk }),
-        });
-        currentSession = session;
-
-        const exitCode = await session.exited;
-        currentSession = null;
-
-        // Mark this (agent, cwd) pair as having run at least one attempt,
-        // regardless of exit code / validation outcome, so subsequent
-        // attempts/steps that opt into continuation resume this conversation.
-        sessionStarted.add(sessionKey);
-
-        onEvent({ type: "step-output-complete", stepIndex, exitCode });
-
-        if (cancelled) {
-          emitCancelledIfNeeded();
-          return;
-        }
-
-        const stepText = cleanOutput(session.raw, liveCols, liveRows);
-
-        if (exitCode !== 0) {
-          const feedback = `Agent exited with code ${exitCode}`;
-          if (attempt < maxAttempts) {
-            onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback });
-            retryFeedback = feedback;
-            continue;
-          }
-          onEvent({ type: "step-failed", stepIndex, error: feedback });
-          onEvent({ type: "flow-failed", error: feedback });
-          return;
-        }
-
-        if (step.validate) {
-          onEvent({ type: "validation-start", stepIndex });
-          let verdict;
-          try {
-            verdict = await validateOutput({
-              stepPrompt: basePrompt,
-              expectedResult: step.expectedResult,
-              output: stepText,
-            });
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            onEvent({ type: "step-failed", stepIndex, error: message });
-            onEvent({ type: "flow-failed", error: message });
-            return;
-          }
-
-          if (cancelled) {
-            emitCancelledIfNeeded();
-            return;
-          }
-
-          onEvent({ type: "validation-result", stepIndex, verdict });
-
-          if (!verdict.passed) {
-            if (attempt < maxAttempts) {
-              onEvent({
-                type: "step-retry",
-                stepIndex,
-                attempt: attempt + 1,
-                feedback: verdict.feedback,
-              });
-              retryFeedback = verdict.feedback;
-              continue;
-            }
-            onEvent({ type: "step-failed", stepIndex, error: verdict.feedback });
-            onEvent({ type: "flow-failed", error: verdict.feedback });
-            return;
-          }
-        }
-
-        stepOutputs[step.name] = stepText;
-        onEvent({ type: "step-complete", stepIndex, output: stepText });
-        stepSucceeded = true;
-        break;
+      // stepResult is a failure outcome; consult onFailure routing before
+      // giving up on the flow.
+      const routed = tryRouteFailure(stepIndex);
+      if (routed !== null) {
+        stepIndex = routed;
+        continue;
       }
-
-      if (!stepSucceeded) {
-        // Should be unreachable: every exit path above either continues the
-        // attempt loop, returns, or sets stepSucceeded.
-        return;
-      }
+      onEvent({ type: "flow-failed", error: stepResult.error });
+      return;
     }
 
     onEvent({ type: "flow-complete" });
+  }
+
+  /** Runs a single non-interactive (exec-path) step: one PTY process per
+   * attempt, retries on non-zero exit / failed validation. Emits
+   * "step-failed" once retries are exhausted but does not emit
+   * "flow-failed" — the outer loop decides whether to route or terminate. */
+  async function runExecStep(args: {
+    step: Flow["steps"][number];
+    stepIndex: number;
+    basePrompt: string;
+    resolvedCwd: string;
+    stepOutputs: Record<string, string>;
+    sessionStarted: Set<string>;
+  }): Promise<"success" | "cancelled" | { outcome: "failed"; error: string }> {
+    const { step, stepIndex, basePrompt, resolvedCwd, stepOutputs, sessionStarted } = args;
+    const resolvedCwdKey = resolvedCwd;
+    const sessionKey = `${step.agent}::${resolvedCwdKey}`;
+
+    const maxAttempts = 1 + Math.max(0, step.maxRetries);
+    let retryFeedback: string | undefined;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (cancelled) {
+        emitCancelledIfNeeded();
+        return "cancelled";
+      }
+
+      onEvent({
+        type: "step-start",
+        stepIndex,
+        stepName: step.name,
+        agent: step.agent,
+        attempt,
+      });
+
+      const promptForAttempt =
+        retryFeedback !== undefined
+          ? basePrompt + RETRY_CONTEXT_TEMPLATE(retryFeedback)
+          : basePrompt;
+
+      const effectiveContinue =
+        step.continueSession === true &&
+        agentSupportsContinuation(step.agent) &&
+        sessionStarted.has(sessionKey);
+
+      let cmd: string[];
+      let extraEnv: Record<string, string> | undefined;
+      try {
+        const built = buildAgentCommand(step, promptForAttempt, effectiveContinue);
+        cmd = built.cmd;
+        extraEnv = built.env;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        onEvent({ type: "step-failed", stepIndex, error: message });
+        return { outcome: "failed", error: message };
+      }
+
+      const attemptCols = liveCols;
+      const attemptRows = liveRows;
+
+      const session = new AgentSession({
+        cmd,
+        env: extraEnv,
+        cwd: resolvedCwd,
+        cols: attemptCols,
+        rows: attemptRows,
+        onData: (chunk) => onEvent({ type: "agent-output", stepIndex, chunk }),
+      });
+      currentSession = session;
+
+      const exitCode = await session.exited;
+      currentSession = null;
+
+      // Mark this (agent, cwd) pair as having run at least one attempt,
+      // regardless of exit code / validation outcome, so subsequent
+      // attempts/steps that opt into continuation resume this conversation.
+      sessionStarted.add(sessionKey);
+
+      onEvent({ type: "step-output-complete", stepIndex, exitCode });
+
+      if (cancelled) {
+        emitCancelledIfNeeded();
+        return "cancelled";
+      }
+
+      const stepText = cleanOutput(session.raw, liveCols, liveRows);
+
+      if (exitCode !== 0) {
+        const feedback = `Agent exited with code ${exitCode}`;
+        if (attempt < maxAttempts) {
+          onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback });
+          retryFeedback = feedback;
+          continue;
+        }
+        onEvent({ type: "step-failed", stepIndex, error: feedback });
+        return { outcome: "failed", error: feedback };
+      }
+
+      if (step.validate) {
+        onEvent({ type: "validation-start", stepIndex });
+        let verdict;
+        try {
+          verdict = await validateOutput({
+            stepPrompt: basePrompt,
+            expectedResult: step.expectedResult,
+            output: stepText,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          onEvent({ type: "step-failed", stepIndex, error: message });
+          return { outcome: "failed", error: message };
+        }
+
+        if (cancelled) {
+          emitCancelledIfNeeded();
+          return "cancelled";
+        }
+
+        onEvent({ type: "validation-result", stepIndex, verdict });
+
+        if (!verdict.passed) {
+          if (attempt < maxAttempts) {
+            onEvent({
+              type: "step-retry",
+              stepIndex,
+              attempt: attempt + 1,
+              feedback: verdict.feedback,
+            });
+            retryFeedback = verdict.feedback;
+            continue;
+          }
+          onEvent({ type: "step-failed", stepIndex, error: verdict.feedback });
+          return { outcome: "failed", error: verdict.feedback };
+        }
+      }
+
+      stepOutputs[step.name] = stepText;
+      onEvent({ type: "step-complete", stepIndex, output: stepText });
+      return "success";
+    }
+
+    // Unreachable: every branch above either returns or continues.
+    return { outcome: "failed", error: "step attempt loop exhausted" };
   }
 
   /** Spawns a fresh interactive session for `step.agent`, replacing (and
@@ -461,16 +518,18 @@ export function runFlow(
    * and the awaiting-input gate. Identical semantics across claude,
    * opencode, codex, and gemini — the only agent-specific behavior lives in
    * interactive.ts's per-agent adapters. Returns "success" once the step's
-   * output should be recorded and the outer loop should move on, or
-   * "failed"/"cancelled" once the corresponding terminal events have
-   * already been emitted. */
+   * output should be recorded and the outer loop should move on,
+   * "cancelled" once the run has been cancelled (a "flow-failed"/"Cancelled
+   * by user" has already been emitted), or `{ outcome: "failed", error }`
+   * once the step exhausted its retries — the outer loop then decides
+   * whether to route to another step or terminate the flow. */
   async function runInteractiveStep(args: {
     step: Flow["steps"][number];
     stepIndex: number;
     basePrompt: string;
     resolvedCwd: string;
     stepOutputs: Record<string, string>;
-  }): Promise<"success" | "failed" | "cancelled"> {
+  }): Promise<"success" | "cancelled" | { outcome: "failed"; error: string }> {
     const { step, stepIndex, basePrompt, resolvedCwd, stepOutputs } = args;
     const turns: string[] = [];
     const maxAttempts = 1 + Math.max(0, step.maxRetries);
@@ -542,8 +601,7 @@ export function runFlow(
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           onEvent({ type: "step-failed", stepIndex, error: message });
-          onEvent({ type: "flow-failed", error: message });
-          return "failed";
+          return { outcome: "failed", error: message };
         }
 
         if (cancelled) {
@@ -567,8 +625,7 @@ export function runFlow(
             continue;
           }
           onEvent({ type: "step-failed", stepIndex, error: verdict.feedback });
-          onEvent({ type: "flow-failed", error: verdict.feedback });
-          return "failed";
+          return { outcome: "failed", error: verdict.feedback };
         }
       }
 
@@ -578,7 +635,6 @@ export function runFlow(
         onEvent({ type: "step-complete", stepIndex, output: stepText });
         return "success";
       }
-
       // --- Awaiting-input gate. ---
       onEvent({ type: "step-awaiting-input", stepIndex, stepName: step.name, message: gateMessage(verdict, step.pauseForReview === true) });
 
@@ -634,8 +690,7 @@ export function runFlow(
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             onEvent({ type: "step-failed", stepIndex, error: message });
-            onEvent({ type: "flow-failed", error: message });
-            return "failed";
+            return { outcome: "failed", error: message };
           }
 
           if (cancelled) {

@@ -37,6 +37,10 @@ export interface ActiveRun {
   status: RunStatus;
   stepStatuses: StepUiStatus[];
   attempts: number[];
+  /** How many times each step has been entered by the engine (increments
+   * on each fresh `step-start` for that index, i.e. `attempt === 1`).
+   * Greater than 1 means the step was re-executed by a routing jump. */
+  executions: number[];
   statusMessage: RunStatusMessage | null;
   finalError: string | null;
   /** Raw chunks fed to the agent's PTY output, in order — replayed into a
@@ -115,6 +119,7 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
     status: "running",
     stepStatuses: flow.steps.map(() => "pending"),
     attempts: flow.steps.map(() => 1),
+    executions: flow.steps.map(() => 0),
     statusMessage: null,
     finalError: null,
     feedLog: [],
@@ -158,6 +163,9 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           run.attempts[e.stepIndex] = e.attempt;
           if (e.attempt === 1) {
             run.feedLog.push(stepSeparator(e.stepIndex, e.stepName));
+            run.executions[e.stepIndex] = (run.executions[e.stepIndex] ?? 0) + 1;
+            const rec = stepRecords[e.stepIndex];
+            if (rec) rec.executions = run.executions[e.stepIndex];
           }
           break;
         case "agent-output":
@@ -210,6 +218,18 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           run.statusMessage = { text: e.note, kind: "warning" };
           run.feedLog.push(`\r\n\x1b[2m[note] ${e.note}\x1b[0m\r\n`);
           break;
+        case "step-jump": {
+          const fromName = flow.steps[e.fromIndex]?.name ?? `step ${e.fromIndex + 1}`;
+          const toName = flow.steps[e.toIndex]?.name ?? `step ${e.toIndex + 1}`;
+          const reasonLabel = e.reason === "success" ? "on success" : "on failure";
+          const msg = `jumped ${reasonLabel}: ${fromName} → ${toName}`;
+          run.statusMessage = { text: msg, kind: e.reason === "failure" ? "warning" : "secondary" };
+          run.feedLog.push(`\r\n\x1b[2;38;5;114m↪ ${msg}\x1b[0m\r\n`);
+          // The target step is about to (re-)execute — reset its UI status
+          // so the steps pane doesn't keep showing a stale ✓/✗ for it.
+          run.stepStatuses[e.toIndex] = "pending";
+          break;
+        }
         case "session-live-changed":
           run.hasLiveSession = e.live;
           break;
