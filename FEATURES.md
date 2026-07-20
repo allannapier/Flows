@@ -12,7 +12,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **4. Re-run a Previous Run with the Same Parameters**
 - [x] **5. Reusable Flows — Templated & Flow-Level Working Directory**
 - [x] **6. Flow Portability — Duplicate, Export, and Import**
-- [ ] **7. Flow Integrity Linting (save-time + pre-run)**
+- [x] **7. Flow Integrity Linting (save-time + pre-run)**
 - [ ] **8. Per-Step Timeout Watchdog**
 - [ ] **9. Terminal Notifications for Background Runs**
 - [ ] **10. Headless CLI Mode (run flows non-interactively)**
@@ -236,7 +236,7 @@ Flows are trapped in `$FLOWS_HOME/flows/*.json` on one machine. Users need to it
 
 ### 7. Flow Integrity Linting (save-time + pre-run)
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Several editing operations can silently corrupt a flow today: renaming a step breaks every `{{steps.<oldName>.output}}` placeholder that references it (the run then throws mid-flow), duplicate step names make placeholder resolution ambiguous, deleting or reordering steps invalidates `routing.onSuccess`/`onFailure` indices, and prompts can reference parameters that don't exist. None of this is caught until a run fails at the broken step. Add a lint pass that catches these at save time and before every run.

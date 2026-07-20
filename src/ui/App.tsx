@@ -81,7 +81,13 @@ export function App() {
         />
       );
     case "edit":
-      return <FlowEditor flowId={screen.flowId} onDone={goList} onCancel={goList} />;
+      return (
+        <FlowEditor
+          flowId={screen.flowId}
+          onDone={(status) => (status ? goListWithStatus(status) : goList())}
+          onCancel={goList}
+        />
+      );
     case "confirm-delete":
       return (
         <ConfirmDelete
