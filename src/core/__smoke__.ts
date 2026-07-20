@@ -28,6 +28,8 @@ import { buildAgentCommand } from "./agents";
 import { loadConfig, saveConfig, resolveValidator, maskKey } from "./config";
 import { bell, notify } from "./notify";
 import { getActiveRun, setViewedRun, startRun } from "./runManager";
+import { listRuns } from "./runStore";
+import { cliRun } from "../cli/run";
 import {
   agentScratchDir,
   agentSupportsInteractive,
@@ -1043,6 +1045,171 @@ async function testRunManagerNotifications(): Promise<void> {
   console.log("runManager notifications: OK");
 }
 
+async function testCliRun(): Promise<void> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  // console.log/error bind their own reference to process.stdout/stderr.write
+  // at construction (see Bun's/Node's Console impl), so patching those
+  // streams directly (as testNotify/testRunManagerNotifications do for
+  // notify()'s raw writes) would not intercept cli/run.ts's console calls —
+  // patch console.log/console.error themselves instead.
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = ((...args: unknown[]) => {
+    stdout.push(args.map(String).join(" ") + "\n");
+  }) as typeof console.log;
+  console.error = ((...args: unknown[]) => {
+    stderr.push(args.map(String).join(" ") + "\n");
+  }) as typeof console.error;
+  // Separately catch any *raw* process.stdout.write — this is what
+  // notify()/bell() use directly (console.log bypasses the patched
+  // function above, having bound the original at construction), so this
+  // array isolates whether a headless run ever rang the bell.
+  const rawStdoutWrites: string[] = [];
+  const originalRawStdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: unknown) => {
+    rawStdoutWrites.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    // Usage/resolution errors, exit code 2, nothing run.
+    let code = await cliRun([]);
+    assert.equal(code, 2, "missing flow ref should be a usage error");
+
+    code = await cliRun(["Does Not Exist"]);
+    assert.equal(code, 2, "unknown flow should be a usage error");
+    assert.ok(
+      stdout.join("").includes("No flow found") || stderr.join("").includes("No flow found"),
+      "expected an error naming the missing flow",
+    );
+
+    // A flow with a required parameter and no default.
+    const paramFlow: Flow = {
+      id: newFlowId(),
+      name: "CLI Param Flow",
+      description: "",
+      parameters: [{ name: "who", description: "", required: true, choices: ["ada", "bob"] }],
+      steps: [
+        {
+          id: "step-1",
+          name: "greet",
+          agent: "custom",
+          customCommand: 'echo "hi $FLOW_PROMPT"',
+          prompt: "{{params.who}}",
+          expectedResult: "N/A",
+          validate: false,
+          maxRetries: 0,
+        },
+      ],
+      createdAt: "",
+      updatedAt: "",
+    };
+    saveFlow(paramFlow);
+
+    stdout.length = 0;
+    stderr.length = 0;
+    code = await cliRun([paramFlow.id]);
+    assert.equal(code, 2, "missing required parameter should be a usage error");
+
+    stdout.length = 0;
+    stderr.length = 0;
+    code = await cliRun([paramFlow.id, "--param", "who=turbo"]);
+    assert.equal(code, 2, "a value outside the parameter's choices should be a usage error");
+
+    // A full successful run, by id, persists like a TUI run and prints the
+    // step output to stdout with progress on stderr — never a raw notify
+    // OSC/bell byte on either stream, since headless runs are silent.
+    stdout.length = 0;
+    stderr.length = 0;
+    code = await cliRun([paramFlow.id, "--param", "who=ada"]);
+    assert.equal(code, 0, "a valid run should succeed");
+    assert.ok(stdout.join("").includes("hi ada"), `expected step output on stdout, got: ${JSON.stringify(stdout)}`);
+    assert.ok(stderr.join("").includes("complete"), `expected progress lines on stderr, got: ${JSON.stringify(stderr)}`);
+    assert.equal(
+      rawStdoutWrites.length,
+      0,
+      `headless runs must be silent — no raw bell/OSC 777 write, got: ${JSON.stringify(rawStdoutWrites)}`,
+    );
+    const runs = listRuns(paramFlow.id);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.status, "complete");
+    assert.equal(runs[0]!.params.who, "ada");
+
+    // --json emits one parseable RunEvent per stdout line, nothing else.
+    stdout.length = 0;
+    stderr.length = 0;
+    code = await cliRun([paramFlow.id, "--param", "who=bob", "--json"]);
+    assert.equal(code, 0);
+    const jsonLines = stdout.join("").split("\n").filter((l) => l.trim() !== "");
+    assert.ok(jsonLines.length > 0, "expected at least one JSON event line");
+    for (const line of jsonLines) {
+      const parsed = JSON.parse(line) as { type: string };
+      assert.ok(typeof parsed.type === "string", `line did not parse as a RunEvent: ${line}`);
+    }
+    assert.ok(jsonLines.some((l) => l.includes('"flow-complete"')), "expected a flow-complete event");
+
+    // A flow that fails exits 1 and is persisted as failed.
+    const failFlow: Flow = {
+      id: newFlowId(),
+      name: "CLI Fail Flow",
+      description: "",
+      parameters: [],
+      steps: [
+        {
+          id: "step-1",
+          name: "boom",
+          agent: "custom",
+          customCommand: "exit 1",
+          prompt: "",
+          expectedResult: "N/A",
+          validate: false,
+          maxRetries: 0,
+        },
+      ],
+      createdAt: "",
+      updatedAt: "",
+    };
+    saveFlow(failFlow);
+    code = await cliRun([failFlow.id]);
+    assert.equal(code, 1, "a failed flow should exit 1");
+    assert.equal(listRuns(failFlow.id)[0]?.status, "failed");
+
+    // A flow with lint errors is refused before anything runs.
+    const badFlow: Flow = {
+      id: newFlowId(),
+      name: "CLI Lint Flow",
+      description: "",
+      parameters: [],
+      steps: [
+        {
+          id: "step-1",
+          name: "one",
+          agent: "custom",
+          customCommand: "echo hi",
+          prompt: "",
+          expectedResult: "N/A",
+          validate: false,
+          maxRetries: 0,
+          routing: { onSuccess: 9 },
+        },
+      ],
+      createdAt: "",
+      updatedAt: "",
+    };
+    saveFlow(badFlow);
+    code = await cliRun([badFlow.id]);
+    assert.equal(code, 2, "a flow with lint errors should be refused, not run");
+    assert.equal(listRuns(badFlow.id).length, 0, "a refused flow should never start a run");
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    process.stdout.write = originalRawStdoutWrite;
+  }
+
+  console.log("cliRun: OK");
+}
+
 function testMaskKey(): void {
   assert.equal(maskKey(undefined), "(not set)");
   assert.equal(maskKey(""), "(not set)");
@@ -1300,6 +1467,7 @@ async function main(): Promise<void> {
   testResolveValidator();
   testNotify();
   await testRunManagerNotifications();
+  await testCliRun();
   testMaskKey();
   testShellQuote();
   testBuildStopHookSettings();

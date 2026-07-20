@@ -150,7 +150,21 @@ export function getInProgressRunForFlow(flowId: string): ActiveRun | undefined {
   return undefined;
 }
 
-export function startRun(flow: Flow, params: Record<string, string>, options?: RunOptions): string {
+export function startRun(
+  flow: Flow,
+  params: Record<string, string>,
+  options?: RunOptions,
+  /** Optional extra observer, called with every raw RunEvent after this
+   * module's own bookkeeping/persistence has processed it. Used by the
+   * headless CLI runner (src/cli/run.ts) to translate events to log lines
+   * without duplicating the persistence logic below. */
+  onEvent?: (e: RunEvent) => void,
+  /** When true, never ring the bell or emit an OSC 777 notification for
+   * this run — used by the headless CLI runner, which has no terminal
+   * "away from the screen" to call back to and whose stdout may be a
+   * machine-parsed stream (--json) that a stray control byte would break. */
+  silent?: boolean,
+): string {
   const id = crypto.randomUUID();
   const stepRecords: RunStepRecord[] = flow.steps.map((s) => ({
     stepId: s.id,
@@ -305,8 +319,9 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           persist(e.error === "Cancelled by user" ? "cancelled" : "failed", e.error);
           break;
       }
-      maybeNotify(id, flow, e);
+      if (!silent) maybeNotify(id, flow, e);
       notifyListeners(id);
+      onEvent?.(e);
     },
     options,
   );
