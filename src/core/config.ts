@@ -21,6 +21,10 @@ export interface ValidatorConfig {
 
 export interface AppConfig {
   validator: ValidatorConfig;
+  /** Terminal bell + OSC 777 desktop notification when a run needs the user
+   * or finishes while they aren't watching it. Absent means on (default);
+   * only loadConfig()'s return is guaranteed to have it resolved. */
+  notifications?: boolean;
 }
 
 export const PROVIDER_LABELS: Record<ValidatorProvider, string> = {
@@ -40,7 +44,7 @@ export const PROVIDER_ENV_VAR: Record<ValidatorProvider, string> = {
 const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8";
 
 function defaultConfig(): AppConfig {
-  return { validator: { provider: "anthropic" } };
+  return { validator: { provider: "anthropic" }, notifications: true };
 }
 
 function flowsHome(): string {
@@ -67,6 +71,7 @@ export function loadConfig(): AppConfig {
         apiKey: parsed.validator.apiKey,
         baseUrl: parsed.validator.baseUrl,
       },
+      notifications: parsed.notifications ?? true,
     };
   } catch {
     return defaultConfig();

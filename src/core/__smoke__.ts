@@ -26,6 +26,8 @@ import { lintFlow } from "./lint";
 import { runFlow } from "./engine";
 import { buildAgentCommand } from "./agents";
 import { loadConfig, saveConfig, resolveValidator, maskKey } from "./config";
+import { bell, notify } from "./notify";
+import { getActiveRun, setViewedRun, startRun } from "./runManager";
 import {
   agentScratchDir,
   agentSupportsInteractive,
@@ -832,7 +834,7 @@ function testConfig(): void {
   fs.rmSync(configFile, { force: true });
 
   const defaults = loadConfig();
-  assert.deepEqual(defaults, { validator: { provider: "anthropic" } });
+  assert.deepEqual(defaults, { validator: { provider: "anthropic" }, notifications: true });
 
   saveConfig({
     validator: {
@@ -840,12 +842,14 @@ function testConfig(): void {
       model: "gpt-5.1",
       apiKey: "sk-test-1234",
     },
+    notifications: false,
   });
 
   const reloaded = loadConfig();
   assert.equal(reloaded.validator.provider, "openai");
   assert.equal(reloaded.validator.model, "gpt-5.1");
   assert.equal(reloaded.validator.apiKey, "sk-test-1234");
+  assert.equal(reloaded.notifications, false);
 
   const mode = fs.statSync(configFile).mode & 0o777;
   assert.equal(mode, 0o600, `expected config.json mode 0600, got ${mode.toString(8)}`);
@@ -903,6 +907,140 @@ function testResolveValidator(): void {
   }
 
   console.log("resolveValidator: OK");
+}
+
+function testNotify(): void {
+  const writes: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: unknown) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    notify("Title", "Body");
+    bell();
+  } finally {
+    process.stdout.write = original;
+  }
+  assert.deepEqual(writes, ["\x07\x1b]777;notify;Title;Body\x07", "\x07"]);
+  console.log("notify: OK");
+}
+
+function echoFlow(name: string): Flow {
+  return {
+    id: newFlowId(),
+    name,
+    description: "",
+    parameters: [],
+    steps: [
+      {
+        id: "step-1",
+        name: "echo",
+        agent: "custom",
+        customCommand: "echo hi",
+        prompt: "",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+async function testRunManagerNotifications(): Promise<void> {
+  const configFile = path.join(process.env.FLOWS_HOME!, "config.json");
+  fs.rmSync(configFile, { force: true });
+
+  const writes: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: unknown) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+
+  async function waitFor(runId: string, predicate: () => boolean): Promise<void> {
+    const deadline = Date.now() + 5000;
+    while (!predicate() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(predicate(), `timed out waiting on run ${runId}`);
+  }
+
+  try {
+    // Unviewed: a completed run fires a full OSC 777 notification naming it.
+    setViewedRun(null);
+    const id1 = startRun(echoFlow("Notify Flow 1"), {});
+    await waitFor(id1, () => getActiveRun(id1)?.status === "complete");
+    assert.ok(
+      writes.some((w) => w.includes("Notify Flow 1") && w.includes("\x1b]777;notify")),
+      `expected an OSC 777 notification for unviewed flow-complete, got: ${JSON.stringify(writes)}`,
+    );
+
+    // Viewed: completion is suppressed entirely.
+    writes.length = 0;
+    const id2 = startRun(echoFlow("Notify Flow 2"), {});
+    setViewedRun(id2);
+    await waitFor(id2, () => getActiveRun(id2)?.status === "complete");
+    assert.equal(writes.length, 0, `expected no notification while viewing the run, got: ${JSON.stringify(writes)}`);
+    setViewedRun(null);
+
+    // notifications: false in config suppresses everything, even unviewed.
+    writes.length = 0;
+    saveConfig({ validator: loadConfig().validator, notifications: false });
+    const id3 = startRun(echoFlow("Notify Flow 3"), {});
+    await waitFor(id3, () => getActiveRun(id3)?.status === "complete");
+    assert.equal(writes.length, 0, `expected no notification with notifications disabled, got: ${JSON.stringify(writes)}`);
+    saveConfig({ validator: loadConfig().validator, notifications: true });
+
+    // step-alert: bells but omits the OSC body while viewed, sends a full
+    // notification while unviewed — the user may have looked away either way.
+    const alertFlow: Flow = {
+      id: newFlowId(),
+      name: "Notify Alert Flow",
+      description: "",
+      parameters: [],
+      steps: [
+        {
+          id: "step-1",
+          name: "always-fails",
+          agent: "custom",
+          customCommand: "exit 1",
+          prompt: "",
+          expectedResult: "N/A",
+          validate: false,
+          maxRetries: 0,
+          alertOnFailure: true,
+        },
+      ],
+      createdAt: "",
+      updatedAt: "",
+    };
+
+    writes.length = 0;
+    const id4 = startRun(alertFlow, {});
+    setViewedRun(id4);
+    await waitFor(id4, () => getActiveRun(id4)?.pendingAlert != null);
+    assert.deepEqual(writes, ["\x07"], `expected a bare bell for a viewed step-alert, got: ${JSON.stringify(writes)}`);
+    getActiveRun(id4)?.handle.acknowledgeAlert();
+    await waitFor(id4, () => getActiveRun(id4)?.status === "failed");
+    setViewedRun(null);
+
+    writes.length = 0;
+    const id5 = startRun(alertFlow, {});
+    await waitFor(id5, () => getActiveRun(id5)?.pendingAlert != null);
+    assert.ok(
+      writes.some((w) => w.includes("\x1b]777;notify") && w.includes("Notify Alert Flow")),
+      `expected a full OSC 777 notification for an unviewed step-alert, got: ${JSON.stringify(writes)}`,
+    );
+    getActiveRun(id5)?.handle.acknowledgeAlert();
+    await waitFor(id5, () => getActiveRun(id5)?.status === "failed");
+  } finally {
+    process.stdout.write = original;
+    setViewedRun(null);
+    fs.rmSync(configFile, { force: true });
+  }
+
+  console.log("runManager notifications: OK");
 }
 
 function testMaskKey(): void {
@@ -1160,6 +1298,8 @@ async function main(): Promise<void> {
   await testEngineWorkingDir();
   testConfig();
   testResolveValidator();
+  testNotify();
+  await testRunManagerNotifications();
   testMaskKey();
   testShellQuote();
   testBuildStopHookSettings();

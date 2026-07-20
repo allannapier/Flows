@@ -9,6 +9,7 @@ import {
   closeRun,
   continueRun,
   getActiveRun,
+  setViewedRun,
   startRun,
   subscribeRun,
   type StepUiStatus,
@@ -125,6 +126,17 @@ export function RunScreen({
   useEffect(() => {
     if (!runId) return;
     return subscribeRun(runId, forceUpdate);
+  }, [runId]);
+
+  // Tells runManager this run is on-screen so it suppresses completion/
+  // failure notifications for it (awaiting-input/step-alert still bell).
+  // Cleared on every runId change (including the final unmount), not just
+  // at the end, so navigating from one run straight to another never leaves
+  // the old id registered as "viewed".
+  useEffect(() => {
+    if (!runId) return;
+    setViewedRun(runId);
+    return () => setViewedRun(null);
   }, [runId]);
 
   const run = runId ? getActiveRun(runId) : undefined;

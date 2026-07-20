@@ -11,7 +11,7 @@ import {
   type ValidatorProvider,
 } from "../core/config";
 import { validateOutput } from "../core/validator";
-import { colors, Hint, FieldRow, ButtonRow, RowHint, marker, type KeyHintSpec } from "./theme";
+import { colors, Hint, FieldRow, ButtonRow, RowHint, TabToggleRow, marker, type KeyHintSpec } from "./theme";
 
 const PROVIDER_ORDER: ValidatorProvider[] = ["anthropic", "openai", "google", "custom"];
 
@@ -42,6 +42,8 @@ function modelPlaceholder(provider: ValidatorProvider): string {
 
 export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
   const [draft, setDraft] = useState<ValidatorConfig>(() => ({ ...loadConfig().validator }));
+  const [notifications, setNotifications] = useState(() => loadConfig().notifications ?? true);
+  const [editingNotifications, setEditingNotifications] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [editingField, setEditingField] = useState<TextField | null>(null);
   const [editingProvider, setEditingProvider] = useState(false);
@@ -52,6 +54,7 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
   const buttonRows = ["save", "test", "cancel"] as const;
   const rows: string[] = ["provider", "model", "apiKey"];
   if (draft.provider === "custom") rows.push("baseUrl");
+  rows.push("notifications");
   rows.push(...buttonRows);
   const safeCursor = clamp(cursor, 0, rows.length - 1);
   const isRow = (name: string) => rows[safeCursor] === name;
@@ -92,6 +95,9 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
       case "baseUrl":
         beginEdit("baseUrl", draft.baseUrl ?? "");
         break;
+      case "notifications":
+        setEditingNotifications(true);
+        break;
       case "save":
         trySave();
         break;
@@ -115,7 +121,7 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
       setCursor(rows.indexOf("baseUrl"));
       return;
     }
-    saveConfig({ validator: draft });
+    saveConfig({ validator: draft, notifications });
     onDone();
   }
 
@@ -127,7 +133,7 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
         stepPrompt: "Say OK",
         expectedResult: "The output says OK",
         output: "OK",
-        configOverride: { validator: draft },
+        configOverride: { validator: draft, notifications },
       });
       setTestStatus({ kind: "success", passed: verdict.passed });
     } catch (err) {
@@ -143,6 +149,10 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
     }
     if (editingProvider) {
       if (key.name === "escape") setEditingProvider(false);
+      return;
+    }
+    if (editingNotifications) {
+      if (key.name === "escape") setEditingNotifications(false);
       return;
     }
     if (editingField) {
@@ -184,7 +194,7 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
   const bottomHints: KeyHintSpec[] =
     testStatus.kind === "testing"
       ? [{ keys: "esc", label: "cancel" }]
-      : editingProvider
+      : editingProvider || editingNotifications
         ? [
             { keys: "←→", label: "choose" },
             { keys: "⏎", label: "confirm" },
@@ -315,6 +325,24 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
               value={draft.baseUrl ?? ""}
               placeholder="https://api.example.com/v1"
             />
+          )}
+        </box>
+
+        <box border borderStyle="single" borderColor={colors.chrome} title="General" flexDirection="column" padding={1}>
+          <TabToggleRow
+            label="Notifications"
+            selected={isRow("notifications")}
+            editing={editingNotifications}
+            value={notifications}
+            onSelect={(v) => {
+              setNotifications(v);
+              setEditingNotifications(false);
+            }}
+          />
+          {isRow("notifications") && !editingNotifications && (
+            <text fg={colors.textSecondary}>
+              {"  "}bell + desktop notification when a backgrounded run needs you or finishes
+            </text>
           )}
 
           <ButtonRow

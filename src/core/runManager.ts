@@ -12,7 +12,9 @@
 // the raw terminal feed log — those can't survive a restart regardless.
 
 import type { Flow, RunEvent, RunHandle, RunOptions, RunRecord, RunStatus, RunStepRecord } from "../types";
+import { loadConfig } from "./config";
 import { runFlow } from "./engine";
+import { bell, notify } from "./notify";
 import { saveRun, sweepStaleRuns } from "./runStore";
 
 // ANSI 256-color 114 is a muted spring-green, matching the UI's accent
@@ -78,13 +80,51 @@ type Listener = () => void;
 const active = new Map<string, ActiveRun>();
 const listeners = new Map<string, Set<Listener>>();
 
+// The run id the run screen currently has open, if any — notifications for
+// that run's completion/failure are suppressed since the user is already
+// watching it (see setViewedRun / maybeNotify below).
+let viewedRunId: string | null = null;
+
+/** Registers (or clears, with `null`) which run's screen is currently on
+ * screen. Called by RunScreen on mount/unmount/re-attach. */
+export function setViewedRun(runId: string | null): void {
+  viewedRunId = runId;
+}
+
+/** Fires a bell/notification for events that call the user back to a
+ * backgrounded run: a gate that needs them (awaiting-input, step-alert)
+ * always bells — even if they're currently watching, since they may have
+ * looked away from a long-running step — but only shows the full OSC 777
+ * notification (with body) when they aren't. Terminal outcomes
+ * (flow-complete/flow-failed) are suppressed entirely while watching. */
+function maybeNotify(runId: string, flow: Flow, event: RunEvent): void {
+  if (loadConfig().notifications === false) return;
+  const isViewed = viewedRunId === runId;
+  switch (event.type) {
+    case "step-awaiting-input":
+      if (isViewed) bell();
+      else notify(`${flow.name} — needs input`, event.message);
+      break;
+    case "step-alert":
+      if (isViewed) bell();
+      else notify(`${flow.name} — step failed`, `${event.stepName}: ${event.error}`);
+      break;
+    case "flow-complete":
+      if (!isViewed) notify(`${flow.name} — complete`, "Flow finished successfully");
+      break;
+    case "flow-failed":
+      if (!isViewed) notify(`${flow.name} — failed`, event.error);
+      break;
+  }
+}
+
 // Runs left "running"/"awaiting-input" on disk from a previous process (app
 // exited or crashed mid-flow) have nothing left to ever finish them —
 // rewrite them to "interrupted" once, at module load (i.e. app startup,
 // before any run has been started so `active` is still empty).
 sweepStaleRuns((runId) => active.has(runId));
 
-function notify(runId: string): void {
+function notifyListeners(runId: string): void {
   for (const l of listeners.get(runId) ?? []) l();
 }
 
@@ -265,7 +305,8 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           persist(e.error === "Cancelled by user" ? "cancelled" : "failed", e.error);
           break;
       }
-      notify(id);
+      maybeNotify(id, flow, e);
+      notifyListeners(id);
     },
     options,
   );
@@ -297,7 +338,7 @@ export function acknowledgeAlert(runId: string): void {
   if (!run) return;
   run.pendingAlert = null;
   run.handle.acknowledgeAlert();
-  notify(runId);
+  notifyListeners(runId);
 }
 
 /** Kills any live interactive session for a run and cleans up its scratch
