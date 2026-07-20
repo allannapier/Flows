@@ -123,7 +123,7 @@ export function SettingsScreen({ onDone, onCancel }: { onDone: () => void; onCan
     setError(null);
     setTestStatus({ kind: "testing" });
     try {
-      const verdict = await validateOutput({
+      const { verdict } = await validateOutput({
         stepPrompt: "Say OK",
         expectedResult: "The output says OK",
         output: "OK",

@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { extend, useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
-import { decodePasteBytes, type ScrollBoxRenderable } from "@opentui/core";
+import { decodePasteBytes, TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import { GhosttyTerminalRenderable } from "ghostty-opentui/terminal-buffer";
 import { getFlow } from "../core/storage";
-import { cancelRun, closeRun, continueRun, getActiveRun, startRun, subscribeRun, type StepUiStatus } from "../core/runManager";
+import {
+  acknowledgeAlert,
+  cancelRun,
+  closeRun,
+  continueRun,
+  getActiveRun,
+  startRun,
+  subscribeRun,
+  type StepUiStatus,
+} from "../core/runManager";
 import type { Flow, RunStatus } from "../types";
-import { colors, Hint, type KeyHintSpec } from "./theme";
+import { Button, colors, Hint, type KeyHintSpec } from "./theme";
 import { setAttached } from "./attach-state";
 
 extend({ "ghostty-terminal": GhosttyTerminalRenderable });
@@ -163,6 +172,16 @@ export function RunScreen({
   }
 
   useKeyboard((key) => {
+    // A blocking step-failure alert takes over the whole screen: every
+    // other binding (attach, continue, cancel, scroll, even keys otherwise
+    // forwarded to an attached agent PTY) is suspended until dismissed.
+    if (run?.pendingAlert) {
+      if (key.eventType === "release") return;
+      if (!key.ctrl && !key.meta && (key.name === "return" || key.name === "d")) {
+        if (runId) acknowledgeAlert(runId);
+      }
+      return;
+    }
     if (attachedUi) {
       if (key.eventType === "release") return;
       const isDetachKey = key.raw === "\x1d" || key.sequence === "\x1d";
@@ -243,7 +262,7 @@ export function RunScreen({
   });
 
   usePaste((event) => {
-    if (!attachedUi) return;
+    if (!attachedUi || run?.pendingAlert) return;
     const text = decodePasteBytes(event.bytes);
     run?.handle.write(text);
   });
@@ -266,6 +285,37 @@ export function RunScreen({
   }
 
   const displayFlow = run.flow;
+
+  if (run.pendingAlert) {
+    const alert = run.pendingAlert;
+    return (
+      <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg} justifyContent="center" alignItems="center">
+        <box
+          border
+          borderStyle="rounded"
+          borderColor={colors.error}
+          title="Step failed"
+          padding={2}
+          flexDirection="column"
+          gap={1}
+          width={Math.min(termCols, 72)}
+        >
+          <text>
+            <span fg={colors.textSecondary}>Step "</span>
+            <span fg={colors.textPrimary} attributes={TextAttributes.BOLD}>
+              {alert.stepName}
+            </span>
+            <span fg={colors.textSecondary}>" failed:</span>
+          </text>
+          <text fg={colors.error}>{alert.error}</text>
+          <box flexDirection="row" gap={2}>
+            <Button label="⏎ Dismiss" selected color={colors.error} />
+          </box>
+        </box>
+        <Hint hints={[{ keys: "⏎/d", label: "dismiss" }]} />
+      </box>
+    );
+  }
 
   const isAwaitingInput = run.status === "awaiting-input";
   let terminalBorderColor: string = colors.chrome;

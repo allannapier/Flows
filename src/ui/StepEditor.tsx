@@ -97,6 +97,7 @@ export function StepEditor({
           workingDir: previousStep?.workingDir,
           continueSession: false,
           pauseForReview: false,
+          alertOnFailure: false,
         },
   );
   const [cursor, setCursor] = useState(0);
@@ -105,6 +106,7 @@ export function StepEditor({
   const [editingValidate, setEditingValidate] = useState(false);
   const [editingContinue, setEditingContinue] = useState(false);
   const [editingPauseForReview, setEditingPauseForReview] = useState(false);
+  const [editingAlertOnFailure, setEditingAlertOnFailure] = useState(false);
   const [fieldDraft, setFieldDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [suggest, setSuggest] = useState<SuggestState | null>(null);
@@ -225,6 +227,7 @@ export function StepEditor({
     "validate",
     "continueSession",
     "pauseForReview",
+    "alertOnFailure",
     "maxRetries",
     "workingDir",
     "onSuccess",
@@ -400,6 +403,9 @@ export function StepEditor({
       case "pauseForReview":
         setEditingPauseForReview(true);
         break;
+      case "alertOnFailure":
+        setEditingAlertOnFailure(true);
+        break;
       case "maxRetries":
         beginEdit("maxRetries", String(draft.maxRetries));
         break;
@@ -439,6 +445,10 @@ export function StepEditor({
     }
     if (editingPauseForReview) {
       if (key.name === "escape") setEditingPauseForReview(false);
+      return;
+    }
+    if (editingAlertOnFailure) {
+      if (key.name === "escape") setEditingAlertOnFailure(false);
       return;
     }
     if (editingField === "prompt" || editingField === "expectedResult") {
@@ -516,7 +526,7 @@ export function StepEditor({
         { keys: "⏎", label: "confirm" },
         { keys: "esc", label: "cancel" },
       ]
-    : editingValidate || editingContinue || editingPauseForReview
+    : editingValidate || editingContinue || editingPauseForReview || editingAlertOnFailure
       ? [
           { keys: "←→", label: "choose" },
           { keys: "⏎", label: "confirm" },
@@ -540,7 +550,8 @@ export function StepEditor({
                 ? [{ keys: "⏎", label: "choose" }]
                 : rows[safeCursor] === "validate" ||
                     rows[safeCursor] === "continueSession" ||
-                    rows[safeCursor] === "pauseForReview"
+                    rows[safeCursor] === "pauseForReview" ||
+                    rows[safeCursor] === "alertOnFailure"
                   ? [{ keys: "⏎", label: "toggle" }]
                   : rows[safeCursor] === "save"
                     ? [
@@ -712,6 +723,22 @@ export function StepEditor({
         {isRow("pauseForReview") && !editingPauseForReview && (
           <text fg={colors.textSecondary}>
             {"  "}pause after this step so you can answer the agent's questions
+          </text>
+        )}
+
+        <TabToggleRow
+          label="Alert on failure"
+          selected={isRow("alertOnFailure")}
+          editing={editingAlertOnFailure}
+          value={!!draft.alertOnFailure}
+          onSelect={(v) => {
+            setDraft((d) => ({ ...d, alertOnFailure: v }));
+            setEditingAlertOnFailure(false);
+          }}
+        />
+        {isRow("alertOnFailure") && !editingAlertOnFailure && (
+          <text fg={colors.textSecondary}>
+            {"  "}stop with a blocking alert if this step fails after retries
           </text>
         )}
 

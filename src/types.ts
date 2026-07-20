@@ -84,6 +84,14 @@ export interface FlowStep {
    * (retries exhausted) fail the whole flow.
    */
   routing?: StepRouting;
+  /**
+   * When true, a failure of this step (validation fails and retries are
+   * exhausted) pauses the run and shows a blocking alert to the user
+   * instead of silently proceeding straight to the flow-failed outcome
+   * (or a routing jump). The run resumes — and is then marked failed, or
+   * routed, as normal — once the user dismisses the alert.
+   */
+  alertOnFailure?: boolean;
 }
 
 export interface Flow {
@@ -113,6 +121,26 @@ export interface ValidationVerdict {
   questionsSummary?: string;
 }
 
+/** Per-execution statistics for a single step, computed by the engine as the
+ * step runs and attached to its "step-complete" / "step-failed" event. */
+export interface StepStats {
+  /** How many agent turns the step took (one per attempt on the exec path,
+   * one per completed turn — including retries and awaiting-input turns —
+   * on the interactive path). */
+  turns: number;
+  /** Total tokens (input + output) reported by the validator LLM across all
+   * validation calls made for this step execution. 0 when validation is off
+   * or no provider usage was reported. */
+  tokensUsed: number;
+  /** Number of validation failures (failed attempts) before the step
+   * completed or gave up. */
+  errorCount: number;
+  /** Estimated cost in USD, computed from tokensUsed and the validator
+   * model's known pricing. undefined when the model's pricing is unknown or
+   * no tokens were used. */
+  estimatedCostUsd?: number;
+}
+
 export type RunEvent =
   | { type: "flow-start"; flowName: string; totalSteps: number }
   | { type: "step-start"; stepIndex: number; stepName: string; agent: AgentId; attempt: number }
@@ -121,14 +149,19 @@ export type RunEvent =
   | { type: "validation-start"; stepIndex: number }
   | { type: "validation-result"; stepIndex: number; verdict: ValidationVerdict }
   | { type: "step-retry"; stepIndex: number; attempt: number; feedback: string }
-  | { type: "step-complete"; stepIndex: number; output: string }
-  | { type: "step-failed"; stepIndex: number; error: string }
+  | { type: "step-complete"; stepIndex: number; output: string; stats: StepStats }
+  | { type: "step-failed"; stepIndex: number; error: string; stats: StepStats }
   | { type: "session-note"; stepIndex: number; note: string }
   /** The engine's step pointer jumped non-sequentially because of a step's
    * `routing` configuration — either forward-skipping on success or
    * looping/branching on failure. Purely informational; the target step's
    * own "step-start" fires immediately after. */
   | { type: "step-jump"; fromIndex: number; toIndex: number; reason: "success" | "failure" }
+  /** A step with `alertOnFailure` exhausted its retries. The run pauses
+   * (after already emitting "step-failed") until the UI acknowledges via
+   * RunHandle.acknowledgeAlert(), at which point the run resumes and is
+   * marked failed (or routed to another step) as normal. */
+  | { type: "step-alert"; stepIndex: number; stepName: string; error: string }
   /** A claude step's turn finished and the flow is now paused waiting on the
    * user — either the validator detected the agent is asking a question
    * (needsUserInput) or the step has pauseForReview. `message` is a
@@ -162,6 +195,10 @@ export interface RunHandle {
    * step, keeping whatever output has accumulated so far for the gated
    * step. No-op when the run isn't currently gated. */
   continueFlow(): void;
+  /** Dismisses a currently-open "step-alert" gate (see RunEvent), letting
+   * the run resume and proceed to its normal failure/routing handling.
+   * No-op when the run isn't currently gated on an alert. */
+  acknowledgeAlert(): void;
   /** True if an interactive agent session is currently alive for this run
    * — including after the flow has finished, since a finished flow's last
    * interactive session is kept alive for the user to keep chatting with
@@ -213,6 +250,9 @@ export interface RunStepRecord {
   /** Cleaned (non-ANSI) output text, present once the step has completed. */
   output?: string;
   error?: string;
+  /** Turn/token/error/cost stats for this step's (latest) execution. Absent
+   * on records from before this field existed. */
+  stats?: StepStats;
 }
 
 /** A single run of a flow — one JSON file per run under

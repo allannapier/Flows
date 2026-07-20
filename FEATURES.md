@@ -7,8 +7,15 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 ## Feature List
 
 - [x] **1. Advanced Flow Steps — Conditional Next-Step Routing**
-- [ ] **2. Alert on Step Failure**
-- [ ] **3. Step Stats (turns, tokens, errors, cost)**
+- [x] **2. Alert on Step Failure**
+- [x] **3. Step Stats (turns, tokens, errors, cost)**
+- [x] **4. Re-run a Previous Run with the Same Parameters**
+- [ ] **5. Reusable Flows — Templated & Flow-Level Working Directory**
+- [ ] **6. Flow Portability — Duplicate, Export, and Import**
+- [ ] **7. Flow Integrity Linting (save-time + pre-run)**
+- [ ] **8. Per-Step Timeout Watchdog**
+- [ ] **9. Terminal Notifications for Background Runs**
+- [ ] **10. Headless CLI Mode (run flows non-interactively)**
 
 ---
 
@@ -70,7 +77,7 @@ Allow each step to define routing rules that control which step executes next, b
 
 ### 2. Alert on Step Failure
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Give flow authors the option to have the flow stop immediately and present a prominent alert to the user when a specific step fails (validation fails and retries are exhausted), rather than silently marking the flow as failed. This is an opt-in, per-step toggle.
@@ -98,7 +105,7 @@ Give flow authors the option to have the flow stop immediately and present a pro
 
 ### 3. Step Stats (turns, tokens, error count, cost)
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Track and display per-step execution statistics in the run detail view: how many agent turns the step took, total tokens consumed, how many validation errors occurred during retries, and estimated cost.
@@ -145,3 +152,196 @@ Track and display per-step execution statistics in the run detail view: how many
 - Stats are persisted in the run JSON so they are still visible after restarting the app.
 - Steps that had no validator calls (validation disabled) show turns and error count only; tokens and cost are omitted/zero.
 - The stats display is compact and does not break the existing layout.
+
+---
+
+### 4. Re-run a Previous Run with the Same Parameters
+
+**Status:** Complete
+
+**Goal:**  
+Let the user restart a flow directly from run history without re-typing parameter values. Runs already persist their `params` in `RunRecord`, but today the only way to run again is to go back to the flow list and fill in the parameter form from scratch. This is the most common loop while iterating on a flow ("tweak the flow, run it again with the same inputs").
+
+**Where to implement:**
+
+- **`src/ui/App.tsx`** — Extend the `Screen` union's `"run-params"` variant with an optional `initialParams?: Record<string, string>` field and pass it through to `RunParamsForm`.
+
+- **`src/ui/RunParamsForm.tsx`** — Accept an optional `initialParams` prop. When present, pre-fill each parameter's input with the value from `initialParams` (falling back to the parameter's `default` as today). For `choices` parameters, pre-select the matching choice; if the recorded value is no longer in `choices` (the flow changed since the run), fall back to the default/first choice. Parameters that no longer exist on the flow are silently dropped; new parameters added since the recorded run behave as if unset.
+
+- **`src/ui/RunHistory.tsx`** — Add an `r` key binding ("re-run") on the selected run: navigate to `run-params` with that run's `params` as `initialParams`. Add it to the bottom hints.
+
+- **`src/ui/RunDetail.tsx`** — Add the same `r` binding when inspecting a finished run, so the user can re-run straight from the detail view. This requires `RunDetail`'s parent (`App.tsx`) to provide an `onRerun(params)` callback alongside `onBack`.
+
+**Acceptance criteria:**
+- Pressing `r` on a run in history (or in run detail) opens the parameter form pre-filled with that run's recorded values; the user can still edit any value before starting.
+- Flows with no parameters skip straight to the run screen, same as pressing enter on the flow today.
+- Recorded values for parameters that were removed from the flow are ignored, and parameters added since the run fall back to their defaults — no crash in either direction.
+- Starting the re-run creates a brand-new `RunRecord`; the original run is untouched.
+
+---
+
+### 5. Reusable Flows — Templated & Flow-Level Working Directory
+
+**Status:** Not started
+
+**Goal:**  
+Make one flow usable against many projects. Today `FlowStep.workingDir` is a fixed literal path (`src/core/engine.ts` resolves `step.workingDir || process.cwd()`), so a flow that operates on a repo is welded to one checkout — running the same "implement + review" flow on a different repo means editing every step. This feature (a) allows `{{params.<name>}}` placeholders in working directories so the target directory becomes a run-time parameter, and (b) adds a flow-level default working directory so per-step values are only needed when a step diverges.
+
+**Where to implement:**
+
+- **`src/types.ts`** — Add `workingDir?: string` to `Flow` (flow-level default, may contain `{{params.*}}` placeholders). Document on `FlowStep.workingDir` that it also supports `{{params.*}}` and overrides the flow default.
+
+- **`src/core/template.ts`** — Export a `renderParamsOnly(template, params)` helper (or an options flag on `renderTemplate`) that resolves `{{params.*}}` but rejects `{{steps.*}}` placeholders with a clear error — step outputs are multi-line agent text and must never become a path.
+
+- **`src/core/engine.ts`** — Where the step's cwd is resolved (`const resolvedCwd = step.workingDir || process.cwd()`), change resolution to: rendered `step.workingDir` → rendered `flow.workingDir` → `process.cwd()`. After rendering, expand a leading `~` to `os.homedir()`. Validate that the resolved path exists and is a directory **before** launching the agent; if not, fail the step immediately with an error naming the resolved path (no agent session is started, no retries — a missing directory won't fix itself). Note: session-continuation grouping (same agent + working directory) must compare **resolved** paths, so two steps whose templates render to the same directory still share a session.
+
+- **`src/ui/FlowEditor.tsx`** — Add an optional "Working directory" field to the flow-level form (next to name/description), with help text mentioning `{{params.*}}` support.
+
+- **`src/ui/StepEditor.tsx`** — Update the existing per-step working-directory field's help text: supports `{{params.*}}`, blank = flow default.
+
+**Acceptance criteria:**
+- A flow with a `repoPath` parameter and flow-level working directory `{{params.repoPath}}` runs all its steps in the directory supplied at run time, with no per-step working directories set.
+- A step-level working directory still overrides the flow default, and both support `{{params.*}}` and leading `~`.
+- A working directory that renders to a non-existent path fails the step immediately with an error that includes the resolved path — the agent is never launched.
+- Using `{{steps.*.output}}` in a working directory is rejected with a clear error.
+- Existing flows (no flow-level working directory, literal step paths) behave exactly as before.
+
+---
+
+### 6. Flow Portability — Duplicate, Export, and Import
+
+**Status:** Not started
+
+**Goal:**  
+Flows are trapped in `$FLOWS_HOME/flows/*.json` on one machine. Users need to iterate on a copy without breaking a working flow (duplicate), share a flow with a teammate or check it into a repo (export), and bring someone else's flow in (import).
+
+**Where to implement:**
+
+- **`src/core/storage.ts`**
+  - `duplicateFlow(id: string): Flow | undefined` — deep-copies the flow with a fresh id (`newFlowId()`), name suffixed `" (copy)"`, fresh timestamps, and saves it. Step `id`s are regenerated too (they only need to be unique within the flow).
+  - `exportFlow(id: string, destPath: string): string` — writes the flow JSON (minus `id`, `createdAt`, `updatedAt` — portability metadata is regenerated on import) to `destPath`; returns the resolved absolute path. Default filename: `<slugified-flow-name>.flow.json`.
+  - `importFlow(srcPath: string): Flow` — reads and validates the JSON (must have `name`, `steps` array with the required step fields; unknown extra fields are preserved), assigns a fresh id and timestamps, regenerates step ids, and appends `" (imported)"` to the name if a flow with the same name already exists. Throws with a readable message on malformed input.
+
+- **`src/ui/FlowList.tsx`** — New key bindings and hints: `c` duplicate the selected flow (list refreshes with the copy selected), `x` export the selected flow, `i` import a flow.
+
+- **`src/ui/App.tsx` + a small new screen `src/ui/FilePrompt.tsx`** — `x` and `i` need a path: a minimal one-field screen (single text input, enter to confirm, esc to cancel) that prompts for the destination path (export, pre-filled with `./<slug>.flow.json`) or the source path (import). On success, return to the list showing a transient status line ("Exported to …" / "Imported '<name>'"); on failure, show the error on the same prompt screen without losing the typed path.
+
+**Acceptance criteria:**
+- Duplicating a flow produces an independent copy — editing one never mutates the other — named "<original> (copy)".
+- Export writes a JSON file that contains no machine-specific ids/timestamps; importing it on another machine (or after deleting the original) recreates the flow with all steps, parameters, routing, and per-step settings intact.
+- Importing a file that isn't a valid flow shows a readable error and leaves storage untouched.
+- Name collisions on import are resolved with an "(imported)" suffix, never by overwriting an existing flow.
+
+---
+
+### 7. Flow Integrity Linting (save-time + pre-run)
+
+**Status:** Not started
+
+**Goal:**  
+Several editing operations can silently corrupt a flow today: renaming a step breaks every `{{steps.<oldName>.output}}` placeholder that references it (the run then throws mid-flow), duplicate step names make placeholder resolution ambiguous, deleting or reordering steps invalidates `routing.onSuccess`/`onFailure` indices, and prompts can reference parameters that don't exist. None of this is caught until a run fails at the broken step. Add a lint pass that catches these at save time and before every run.
+
+**Where to implement:**
+
+- **`src/core/lint.ts`** (new file) — `lintFlow(flow: Flow): FlowLintIssue[]` where `FlowLintIssue = { severity: "error" | "warning"; stepIndex?: number; message: string }`. Checks, at minimum:
+  - **error** — a `{{params.<name>}}` placeholder in any step prompt (or working directory, once feature 5 lands) names a parameter the flow doesn't declare;
+  - **error** — a `{{steps.<name>.output}}` placeholder names a step that doesn't exist;
+  - **error** — `routing.onSuccess`/`onFailure` is out of range for the flow's current step count;
+  - **error** — a step with `agent: "custom"` has an empty `customCommand`;
+  - **warning** — two steps share the same `name` (placeholder references are ambiguous — first match wins);
+  - **warning** — a `{{steps.<name>.output}}` placeholder references a step that comes **later** in the flow (its output will be empty/unknown on a purely sequential pass);
+  - **warning** — a parameter `default` is not one of its `choices`.
+  Reuse the placeholder regex from `src/core/template.ts` (export it or add a `listPlaceholders(template)` helper there) rather than duplicating the parsing.
+
+- **`src/ui/FlowEditor.tsx`** — Run `lintFlow` on save. Errors block the save and are listed (with step numbers) in the editor's status area; warnings are shown but don't block. Also maintain referential integrity proactively: when a step is **renamed**, rewrite `{{steps.<oldName>.output}}` to the new name across all other steps' prompts; when steps are **reordered or deleted** (`moveStep` / `removeAt`), remap or clear routing indices that pointed at moved/removed steps, telling the user what was cleared.
+
+- **`src/ui/RunParamsForm.tsx`** (or `App.tsx` just before entering the run screen) — Run `lintFlow` before starting a run; if any **errors** exist (e.g. the flow JSON was hand-edited or imported), show them and refuse to start instead of failing mid-run.
+
+**Acceptance criteria:**
+- Renaming a step in the editor automatically updates every prompt that referenced it; no `{{steps.*.output}}` reference is left dangling after a rename.
+- Reordering or deleting steps never leaves `routing` pointing at the wrong step — indices are remapped (reorder) or cleared with a visible notice (delete).
+- Saving a flow whose prompt references an unknown parameter or step is blocked with a message naming the offending step and placeholder.
+- Starting a run of a flow with lint errors (e.g. imported/hand-edited JSON) is refused with the same readable list, before any agent launches.
+
+---
+
+### 8. Per-Step Timeout Watchdog
+
+**Status:** Not started
+
+**Goal:**  
+Nothing in the engine bounds how long a step may run. A wedged agent (hung CLI, network stall, a Gemini session that never goes quiescent) leaves the flow "running" forever — especially bad for backgrounded runs the user isn't watching. Add an opt-in per-step timeout: when a turn exceeds it, the attempt is treated as a failed attempt (so retries/routing/alerts apply), instead of hanging.
+
+**Where to implement:**
+
+- **`src/types.ts`**
+  - Add `timeoutMinutes?: number` to `FlowStep` (absent or `0` = no timeout, current behaviour).
+  - Add a `RunEvent` variant `{ type: "step-timeout"; stepIndex: number; minutes: number }`, emitted just before the attempt is failed, so the UI can say *why* the attempt ended.
+
+- **`src/core/engine.ts`** — Arm a timer whenever a step attempt starts waiting on the agent (both the interactive turn-completion wait and the custom-agent process wait). Reset it on each completed turn. On expiry: emit `"step-timeout"`, kill the step's agent process/session (reuse the cancellation path's process-kill logic, without cancelling the whole run), and treat the attempt exactly like a validation failure — feedback string `"Step timed out after N minutes"` — so `maxRetries`, `routing.onFailure`, and `alertOnFailure` all behave uniformly. Retried attempts start a **fresh** session (the old one was killed) even when `continueSession` is set. The timer must not fire while the run is gated on the user (`awaiting-input` or an open alert) — user thinking time isn't agent time.
+
+- **`src/ui/StepEditor.tsx`** — Numeric "Timeout (minutes)" field, blank/0 = none, next to "Max retries".
+
+- **`src/ui/RunScreen.tsx`** — Render `"step-timeout"` in the live checklist (e.g. `⏱ timed out after 15m`) so the retry that follows is explicable.
+
+**Acceptance criteria:**
+- A step with a 1-minute timeout whose agent produces no completed turn within a minute is killed and marked as a failed attempt; with retries remaining, a fresh attempt starts.
+- Timeout failures flow through the existing machinery: retries are consumed, `routing.onFailure` routes, `alertOnFailure` alerts, and with none of those the flow fails with a timeout error.
+- Time spent in `awaiting-input` or on an unacknowledged alert never counts toward the timeout.
+- Steps without `timeoutMinutes` behave exactly as today, and the field is persisted in the flow JSON.
+
+---
+
+### 9. Terminal Notifications for Background Runs
+
+**Status:** Not started
+
+**Goal:**  
+The whole point of backgrounded runs (`esc` from the run screen) and the awaiting-input gate is that the user does something else while agents work — but Flows currently has no way to call them back. Emit a terminal bell and (where supported) a desktop notification when a run needs the user or finishes while they aren't looking at it.
+
+**Where to implement:**
+
+- **`src/core/notify.ts`** (new file) — `notify(title: string, body: string): void` that writes to stdout: BEL (`\x07`) plus an OSC 777 notification sequence (`\x1b]777;notify;<title>;<body>\x07`), which iTerm2/kitty/foot/WezTerm surface as a desktop notification and other terminals ignore harmlessly. No external processes, no dependencies.
+
+- **`src/core/config.ts` + `src/ui/SettingsScreen.tsx`** — Add a `notifications: boolean` setting (default **on**) persisted in `config.json`, with a toggle in Settings.
+
+- **`src/core/runManager.ts`** — The run manager already observes every run's events; it decides *when* to notify. Fire on: a run entering `awaiting-input`, a `"step-alert"`, and terminal outcomes (`flow-complete` / `flow-failed`). Suppress the notification when the user is already looking at that run — the run screen registers the currently-viewed run id with the manager (a `setViewedRun(runId | null)` call on mount/unmount, alongside the existing attach surface) — except `awaiting-input` and `step-alert`, which should still ring the bell (no OSC body needed) even on-screen, since the user may have looked away from a long-running step.
+
+- **`src/ui/RunScreen.tsx`** — Register/unregister the viewed run id per the above.
+
+**Acceptance criteria:**
+- With the run screen closed (`esc`), a run that pauses for input, hits an alert, completes, or fails triggers a bell + OSC 777 notification naming the flow and what happened.
+- Watching the run on-screen suppresses completion/failure notifications; awaiting-input still bells.
+- The Settings toggle turns all of it off, and the setting persists across restarts.
+- Terminals without OSC 777 support show no garbage output (the sequence is ignored; the bell still works).
+
+---
+
+### 10. Headless CLI Mode (run flows non-interactively)
+
+**Status:** Not started
+
+**Goal:**  
+Flows can only be run by a human inside the TUI. A headless mode — `bun run start run <flow> --param k=v` — lets flows run from scripts, cron, and CI, turning authored flows into reusable automation. The engine is already fully decoupled from the UI (it emits typed `RunEvent`s), so this is mostly a new thin front-end.
+
+**Where to implement:**
+
+- **`index.tsx`** — Before the TTY check, parse `process.argv`. With no subcommand, behave exactly as today (TUI, TTY required). Subcommands:
+  - `run <flow-name-or-id> [--param key=value ...] [--json]` — run headless (works without a TTY; the current hard TTY exit must only apply to the TUI path);
+  - `list` — print flow names, ids, and step counts;
+  - `--help` — usage text.
+
+- **`src/cli/run.ts`** (new file) — Headless runner:
+  - Resolve the flow by exact id, then unique name match (ambiguous or missing → error listing candidates, exit 2).
+  - Build params from `--param` flags + parameter defaults; any required parameter still missing → error naming it, exit 2. Validate `choices` values.
+  - Call `runFlow` and translate events to log lines on stderr (`[2/5] implement — started`, `— validation failed (attempt 1/3): …`, `— complete`), with step outputs and the final summary on stdout; `--json` instead emits one JSON line per `RunEvent` for machine consumption.
+  - **Gate policy:** there is no user, so `"step-awaiting-input"` is answered by calling `continueFlow()` immediately, and `"step-alert"` by `acknowledgeAlert()` — the run never blocks on a human. Note this in `--help`.
+  - Persist the run through `runManager` exactly like a TUI run (it must appear in run history), and exit 0 on `flow-complete`, 1 on `flow-failed`/cancellation (SIGINT → `handle.cancel()`, then exit 1).
+
+- **`src/core/runManager.ts`** — Ensure starting a run does not depend on any UI module being loaded (it shouldn't today; verify and keep it that way).
+
+**Acceptance criteria:**
+- `bun run start run "My Flow" --param repo=/tmp/x` executes the whole flow without a TTY, streams progress, and exits 0 on success / 1 on failure / 2 on usage errors.
+- Awaiting-input pauses and failure alerts never hang a headless run — they auto-continue/auto-acknowledge, and the log says so.
+- The run appears in the TUI's run history afterwards, indistinguishable from an interactive run.
+- `--json` output is line-delimited JSON parseable by tools like `jq`; plain `bun run start` still launches the TUI unchanged.

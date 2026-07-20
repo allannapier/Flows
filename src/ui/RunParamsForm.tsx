@@ -7,10 +7,15 @@ import { colors, Hint, RowHint, Button, marker, type KeyHintSpec } from "./theme
 
 export function RunParamsForm({
   flowId,
+  initialParams,
   onStart,
   onCancel,
 }: {
   flowId: string;
+  /** Prior run's recorded parameter values (re-run), pre-filling the form.
+   *  Values for parameters no longer on the flow are ignored; parameters
+   *  added since fall back to their normal default. */
+  initialParams?: Record<string, string>;
   onStart: (params: Record<string, string>) => void;
   onCancel: () => void;
 }) {
@@ -20,8 +25,15 @@ export function RunParamsForm({
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     for (const p of params) {
-      // Choice params always have a valid selection (never free-typed empty).
-      initial[p.name] = p.choices?.length ? (p.default ?? p.choices[0] ?? "") : (p.default ?? "");
+      const recorded = initialParams?.[p.name];
+      if (p.choices?.length) {
+        // Choice params always have a valid selection (never free-typed
+        // empty) — fall back to default/first choice if the recorded value
+        // is no longer one of the flow's choices.
+        initial[p.name] = recorded !== undefined && p.choices.includes(recorded) ? recorded : (p.default ?? p.choices[0] ?? "");
+      } else {
+        initial[p.name] = recorded ?? p.default ?? "";
+      }
     }
     return initial;
   });
