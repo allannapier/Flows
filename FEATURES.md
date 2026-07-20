@@ -15,7 +15,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **7. Flow Integrity Linting (save-time + pre-run)**
 - [x] **8. Per-Step Timeout Watchdog**
 - [x] **9. Terminal Notifications for Background Runs**
-- [ ] **10. Headless CLI Mode (run flows non-interactively)**
+- [x] **10. Headless CLI Mode (run flows non-interactively)**
 
 ---
 
@@ -319,7 +319,7 @@ The whole point of backgrounded runs (`esc` from the run screen) and the awaitin
 
 ### 10. Headless CLI Mode (run flows non-interactively)
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Flows can only be run by a human inside the TUI. A headless mode — `bun run start run <flow> --param k=v` — lets flows run from scripts, cron, and CI, turning authored flows into reusable automation. The engine is already fully decoupled from the UI (it emits typed `RunEvent`s), so this is mostly a new thin front-end.
