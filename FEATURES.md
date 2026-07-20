@@ -10,7 +10,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **2. Alert on Step Failure**
 - [x] **3. Step Stats (turns, tokens, errors, cost)**
 - [x] **4. Re-run a Previous Run with the Same Parameters**
-- [ ] **5. Reusable Flows — Templated & Flow-Level Working Directory**
+- [x] **5. Reusable Flows — Templated & Flow-Level Working Directory**
 - [ ] **6. Flow Portability — Duplicate, Export, and Import**
 - [ ] **7. Flow Integrity Linting (save-time + pre-run)**
 - [ ] **8. Per-Step Timeout Watchdog**
@@ -182,7 +182,7 @@ Let the user restart a flow directly from run history without re-typing paramete
 
 ### 5. Reusable Flows — Templated & Flow-Level Working Directory
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Make one flow usable against many projects. Today `FlowStep.workingDir` is a fixed literal path (`src/core/engine.ts` resolves `step.workingDir || process.cwd()`), so a flow that operates on a repo is welded to one checkout — running the same "implement + review" flow on a different repo means editing every step. This feature (a) allows `{{params.<name>}}` placeholders in working directories so the target directory becomes a run-time parameter, and (b) adds a flow-level default working directory so per-step values are only needed when a step diverges.

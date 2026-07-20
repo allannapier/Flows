@@ -754,14 +754,14 @@ export function StepEditor({
         />
 
         <FieldRow
-          label="Working directory (optional)"
+          label="Working directory (optional; supports {{params.*}}, blank = flow default)"
           selected={isRow("workingDir")}
           editing={editingField === "workingDir"}
           fieldDraft={fieldDraft}
           onInput={setFieldDraft}
           onSubmit={commitField}
           value={draft.workingDir ?? ""}
-          placeholder="(cwd)"
+          placeholder="(flow default)"
         />
 
         <FieldRow

@@ -59,7 +59,13 @@ export interface FlowStep {
   validate: boolean;
   /** Retries after a failed validation (0 = no retries). */
   maxRetries: number;
-  /** Working directory for the agent process (defaults to cwd). */
+  /**
+   * Working directory for the agent process. Supports {{params.<name>}}
+   * placeholders (not {{steps.*.output}} — step outputs are multi-line
+   * agent text and must never become a path). Overrides the flow-level
+   * `Flow.workingDir` when set; falls back to it, then process.cwd(), when
+   * absent.
+   */
   workingDir?: string;
   /**
    * Continue the same agent conversation as the previous step in this run
@@ -100,6 +106,13 @@ export interface Flow {
   description: string;
   parameters: FlowParameter[];
   steps: FlowStep[];
+  /**
+   * Default working directory for every step that doesn't set its own
+   * `workingDir`. Supports {{params.<name>}} placeholders (not
+   * {{steps.*.output}}) so the same flow can target a different checkout
+   * per run. Falls back to process.cwd() when absent.
+   */
+  workingDir?: string;
   createdAt: string;
   updatedAt: string;
 }

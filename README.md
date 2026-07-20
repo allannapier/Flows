@@ -121,9 +121,12 @@ rebuilds it.
 
 - **Flow list** — `enter` run · `n` new flow · `e` edit · `d` delete · `s` settings · `q` quit
 - **Flow editor** — arrow keys to move, `enter` to edit a field or open a section,
-  save/cancel actions at the bottom, `esc` to go back
+  save/cancel actions at the bottom, `esc` to go back. A flow can set a default
+  **working directory** (supports `{{params.<name>}}`, e.g. `{{params.repoPath}}`)
+  used by every step that doesn't set its own.
 - **Steps** — each step has: name, agent, prompt template, desired result,
-  validation on/off, max retries, optional working directory
+  validation on/off, max retries, optional working directory (overrides the
+  flow's default; also supports `{{params.*}}` and a leading `~`)
 - **Steps** (additional options) — "Continue session" chains into the previous
   step's conversation; "Pause for review" always pauses after the step so you can
   talk to the agent before the flow moves on

@@ -11,7 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Flow, FlowStep, RunEvent } from "../types";
 import { deleteFlow, getFlow, listFlows, newFlowId, saveFlow } from "./storage";
-import { renderTemplate } from "./template";
+import { renderParamsOnly, renderTemplate } from "./template";
 import { runFlow } from "./engine";
 import { buildAgentCommand } from "./agents";
 import { loadConfig, saveConfig, resolveValidator, maskKey } from "./config";
@@ -84,6 +84,36 @@ function testTemplate(): void {
   assert.ok(threw, "renderTemplate should throw on unknown placeholder");
 
   console.log("template: OK");
+}
+
+function testRenderParamsOnly(): void {
+  const rendered = renderParamsOnly("/repos/{{params.repoName}}", { repoName: "flows" });
+  assert.equal(rendered, "/repos/flows");
+
+  let threw = false;
+  try {
+    renderParamsOnly("{{params.missing}}", {});
+  } catch (err) {
+    threw = true;
+    assert.ok(err instanceof Error);
+    assert.ok((err as Error).message.includes("params.missing"));
+  }
+  assert.ok(threw, "renderParamsOnly should throw on unknown param");
+
+  threw = false;
+  try {
+    renderParamsOnly("{{steps.first.output}}", {});
+  } catch (err) {
+    threw = true;
+    assert.ok(err instanceof Error);
+    assert.ok(
+      (err as Error).message.includes("steps.first.output"),
+      `expected message to name the rejected placeholder, got: ${(err as Error).message}`,
+    );
+  }
+  assert.ok(threw, "renderParamsOnly should reject {{steps.*.output}} placeholders");
+
+  console.log("renderParamsOnly: OK");
 }
 
 async function testEngine(): Promise<void> {
@@ -413,6 +443,118 @@ async function testEngineAlertOnFailure(): Promise<void> {
   console.log("engine alertOnFailure: OK");
 }
 
+async function testEngineWorkingDir(): Promise<void> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "flows-workdir-"));
+  try {
+    // 1. Flow-level workingDir, templated with a run param, used as the
+    //    default when no step-level workingDir is set.
+    const flow: Flow = {
+      id: newFlowId(),
+      name: "Flow-Level WorkingDir",
+      description: "Step has no workingDir; flow-level default applies.",
+      parameters: [{ name: "repoPath", description: "target dir", required: true }],
+      workingDir: "{{params.repoPath}}",
+      steps: [
+        {
+          id: "step-1",
+          name: "pwd",
+          agent: "custom",
+          customCommand: "pwd",
+          prompt: "unused",
+          expectedResult: "N/A",
+          validate: false,
+          maxRetries: 0,
+        },
+      ],
+      createdAt: "",
+      updatedAt: "",
+    };
+
+    const events: RunEvent[] = [];
+    const handle = runFlow(flow, { repoPath: tmpDir }, (e) => events.push(e));
+    await handle.done;
+
+    assert.ok(
+      !events.some((e) => e.type === "flow-failed"),
+      `unexpected flow-failed, got: ${JSON.stringify(events.filter((e) => e.type === "flow-failed"))}`,
+    );
+    const stepComplete = events.find((e) => e.type === "step-complete");
+    assert.ok(stepComplete && stepComplete.type === "step-complete");
+    if (stepComplete && stepComplete.type === "step-complete") {
+      assert.ok(
+        stepComplete.output.includes(fs.realpathSync(tmpDir)),
+        `expected step to run in flow-level workingDir, got: ${JSON.stringify(stepComplete.output)}`,
+      );
+    }
+
+    // 2. Step-level workingDir overrides the flow-level default.
+    const stepDir = fs.mkdtempSync(path.join(tmpDir, "step-"));
+    const overrideFlow: Flow = {
+      ...flow,
+      id: newFlowId(),
+      steps: [{ ...flow.steps[0]!, workingDir: stepDir }],
+    };
+    const overrideEvents: RunEvent[] = [];
+    const overrideHandle = runFlow(overrideFlow, { repoPath: tmpDir }, (e) => overrideEvents.push(e));
+    await overrideHandle.done;
+    const overrideComplete = overrideEvents.find((e) => e.type === "step-complete");
+    assert.ok(overrideComplete && overrideComplete.type === "step-complete");
+    if (overrideComplete && overrideComplete.type === "step-complete") {
+      assert.ok(
+        overrideComplete.output.includes(fs.realpathSync(stepDir)),
+        `expected step-level workingDir to override the flow default, got: ${JSON.stringify(overrideComplete.output)}`,
+      );
+    }
+
+    // 3. A working directory that renders to a non-existent path fails the
+    //    step immediately (no agent launched) with the resolved path in the
+    //    error, and never emits step-start for it.
+    const missingDir = path.join(tmpDir, "does-not-exist");
+    const missingFlow: Flow = {
+      ...flow,
+      id: newFlowId(),
+      workingDir: missingDir,
+    };
+    const missingEvents: RunEvent[] = [];
+    const missingHandle = runFlow(missingFlow, { repoPath: tmpDir }, (e) => missingEvents.push(e));
+    await missingHandle.done;
+    assert.ok(
+      !missingEvents.some((e) => e.type === "step-start"),
+      "step-start should never fire when the working directory doesn't exist",
+    );
+    const missingFailed = missingEvents.find((e) => e.type === "step-failed");
+    assert.ok(missingFailed && missingFailed.type === "step-failed" && missingFailed.error.includes(missingDir));
+    assert.ok(
+      missingEvents.some((e) => e.type === "flow-failed"),
+      "expected flow-failed after the working-directory check fails the only step",
+    );
+
+    // 4. {{steps.*.output}} in a working directory is rejected with a clear
+    //    error and never launches the agent.
+    const stepsPlaceholderFlow: Flow = {
+      ...flow,
+      id: newFlowId(),
+      workingDir: undefined,
+      steps: [{ ...flow.steps[0]!, workingDir: "{{steps.pwd.output}}" }],
+    };
+    const stepsPlaceholderEvents: RunEvent[] = [];
+    const stepsPlaceholderHandle = runFlow(stepsPlaceholderFlow, { repoPath: tmpDir }, (e) => stepsPlaceholderEvents.push(e));
+    await stepsPlaceholderHandle.done;
+    assert.ok(!stepsPlaceholderEvents.some((e) => e.type === "step-start"));
+    const rejectedFailed = stepsPlaceholderEvents.find((e) => e.type === "step-failed");
+    assert.ok(
+      rejectedFailed &&
+        rejectedFailed.type === "step-failed" &&
+        rejectedFailed.error.includes("steps.pwd.output"),
+      `expected step-failed naming the rejected placeholder, got: ${JSON.stringify(rejectedFailed)}`,
+    );
+
+    console.log("engine workingDir (flow-level, override, missing dir, steps.* rejection): OK");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 function testConfig(): void {
   const home = process.env.FLOWS_HOME!;
   const configFile = path.join(home, "config.json");
@@ -732,12 +874,14 @@ async function main(): Promise<void> {
 
   await testStorage();
   testTemplate();
+  testRenderParamsOnly();
   await testEngine();
   await testEngineStepStatsOnRetry();
   testBuildAgentCommand();
   await testEngineContinuation();
   await testEngineWrite();
   await testEngineAlertOnFailure();
+  await testEngineWorkingDir();
   testConfig();
   testResolveValidator();
   testMaskKey();
