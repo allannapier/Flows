@@ -15,6 +15,9 @@
 // Both paths share: prompt templating, LLM validation, and retry/attempt
 // bookkeeping.
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentId, Flow, RunEvent, RunHandle, RunOptions, StepStats, ValidationVerdict } from "../types";
 import { AGENTS, agentSupportsContinuation, buildAgentCommand } from "./agents";
 import { AgentSession } from "./session";
@@ -28,8 +31,45 @@ import {
   type InteractiveAgentSession,
   type TurnResult,
 } from "./interactive";
-import { renderTemplate } from "./template";
+import { renderParamsOnly, renderTemplate } from "./template";
 import { validateOutput } from "./validator";
+
+/** Expands a leading "~" (alone or "~/...") to the user's home directory;
+ * every other path is returned unchanged. Username expansion ("~bob") is
+ * intentionally not supported. */
+function expandHome(rendered: string): string {
+  if (rendered === "~") return os.homedir();
+  if (rendered.startsWith("~/")) return path.join(os.homedir(), rendered.slice(2));
+  return rendered;
+}
+
+/**
+ * Resolves the working directory a step should run in: rendered
+ * `step.workingDir` -> rendered `flow.workingDir` -> process.cwd(). Renders
+ * {{params.*}} placeholders (rejecting {{steps.*.output}} with a clear
+ * error), expands a leading "~", and resolves to an absolute path so that
+ * two templates rendering to the same directory compare equal for session-
+ * continuation grouping. Throws when the resolved path doesn't exist or
+ * isn't a directory — callers must not launch an agent in that case.
+ */
+function resolveStepWorkingDir(step: Flow["steps"][number], flow: Flow, params: Record<string, string>): string {
+  const raw = step.workingDir || flow.workingDir;
+  if (!raw) return process.cwd();
+
+  const rendered = renderParamsOnly(raw, params);
+  const resolved = path.resolve(expandHome(rendered));
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolved);
+  } catch {
+    throw new Error(`Working directory not found: ${resolved}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`Working directory is not a directory: ${resolved}`);
+  }
+  return resolved;
+}
 
 const RETRY_CONTEXT_TEMPLATE = (feedback: string) =>
   `\n\n--- RETRY CONTEXT ---\n` +
@@ -322,8 +362,22 @@ export function runFlow(
       }
 
       const step = flow.steps[stepIndex]!;
-      const resolvedCwd = step.workingDir || process.cwd();
       const interactive = agentSupportsInteractive(step.agent);
+
+      let resolvedCwd: string;
+      try {
+        resolvedCwd = resolveStepWorkingDir(step, flow, params);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        onEvent({ type: "step-failed", stepIndex, error: message, stats: { turns: 0, tokensUsed: 0, errorCount: 0 } });
+        const routed = tryRouteFailure(stepIndex);
+        if (routed !== null) {
+          stepIndex = routed;
+          continue;
+        }
+        onEvent({ type: "flow-failed", error: message });
+        return;
+      }
 
       if (step.continueSession && !interactive && !agentSupportsContinuation(step.agent)) {
         const agentLabel = AGENTS.find((a) => a.id === step.agent)?.label ?? step.agent;

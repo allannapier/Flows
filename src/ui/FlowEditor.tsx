@@ -9,6 +9,7 @@ import { StepEditor } from "./StepEditor";
 type RowKind =
   | { kind: "name" }
   | { kind: "description" }
+  | { kind: "workingDir" }
   | { kind: "param"; index: number }
   | { kind: "add-param" }
   | { kind: "step"; index: number }
@@ -35,6 +36,8 @@ function classifyRow(draft: Flow, idx: number): RowKind {
   i--;
   if (i === 0) return { kind: "description" };
   i--;
+  if (i === 0) return { kind: "workingDir" };
+  i--;
   if (i < draft.parameters.length) return { kind: "param", index: i };
   i -= draft.parameters.length;
   if (i === 0) return { kind: "add-param" };
@@ -48,8 +51,8 @@ function classifyRow(draft: Flow, idx: number): RowKind {
 }
 
 function totalRows(draft: Flow): number {
-  // name, description, params..., add-param, steps..., add-step, save, cancel
-  return 2 + draft.parameters.length + 1 + draft.steps.length + 1 + 2;
+  // name, description, workingDir, params..., add-param, steps..., add-step, save, cancel
+  return 3 + draft.parameters.length + 1 + draft.steps.length + 1 + 2;
 }
 
 type Mode = "browse" | "edit-field" | "param-form" | "step-form";
@@ -72,7 +75,7 @@ export function FlowEditor({
   });
   const [cursor, setCursor] = useState(0);
   const [mode, setMode] = useState<Mode>("browse");
-  const [editingField, setEditingField] = useState<"name" | "description" | null>(null);
+  const [editingField, setEditingField] = useState<"name" | "description" | "workingDir" | null>(null);
   const [fieldDraft, setFieldDraft] = useState("");
   const [paramFormIndex, setParamFormIndex] = useState<number | null>(null);
   const [stepFormIndex, setStepFormIndex] = useState<number | null>(null);
@@ -91,15 +94,21 @@ export function FlowEditor({
     onDone();
   }
 
-  function beginEditField(field: "name" | "description") {
-    setFieldDraft(field === "name" ? draft.name : draft.description);
+  function beginEditField(field: "name" | "description" | "workingDir") {
+    setFieldDraft(field === "name" ? draft.name : field === "description" ? draft.description : draft.workingDir ?? "");
     setEditingField(field);
     setMode("edit-field");
   }
 
   function commitField() {
     setDraft((d) =>
-      editingField === "name" ? { ...d, name: fieldDraft } : editingField === "description" ? { ...d, description: fieldDraft } : d,
+      editingField === "name"
+        ? { ...d, name: fieldDraft }
+        : editingField === "description"
+          ? { ...d, description: fieldDraft }
+          : editingField === "workingDir"
+            ? { ...d, workingDir: fieldDraft || undefined }
+            : d,
     );
     setEditingField(null);
     setMode("browse");
@@ -135,6 +144,9 @@ export function FlowEditor({
         break;
       case "description":
         beginEditField("description");
+        break;
+      case "workingDir":
+        beginEditField("workingDir");
         break;
       case "param":
         setParamFormIndex(row.index);
@@ -338,6 +350,16 @@ export function FlowEditor({
           onSubmit={commitField}
           value={draft.description}
           placeholder="(none)"
+        />
+        <FieldRow
+          label="Working directory (optional; supports {{params.*}}, default for steps)"
+          selected={isRow("workingDir")}
+          editing={editingField_ && editingField === "workingDir"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.workingDir ?? ""}
+          placeholder="(cwd)"
         />
 
         <box
