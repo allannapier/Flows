@@ -11,7 +11,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **3. Step Stats (turns, tokens, errors, cost)**
 - [x] **4. Re-run a Previous Run with the Same Parameters**
 - [x] **5. Reusable Flows — Templated & Flow-Level Working Directory**
-- [ ] **6. Flow Portability — Duplicate, Export, and Import**
+- [x] **6. Flow Portability — Duplicate, Export, and Import**
 - [ ] **7. Flow Integrity Linting (save-time + pre-run)**
 - [ ] **8. Per-Step Timeout Watchdog**
 - [ ] **9. Terminal Notifications for Background Runs**
@@ -210,7 +210,7 @@ Make one flow usable against many projects. Today `FlowStep.workingDir` is a fix
 
 ### 6. Flow Portability — Duplicate, Export, and Import
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Flows are trapped in `$FLOWS_HOME/flows/*.json` on one machine. Users need to iterate on a copy without breaking a working flow (duplicate), share a flow with a teammate or check it into a repo (export), and bring someone else's flow in (import).
