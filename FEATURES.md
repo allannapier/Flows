@@ -14,7 +14,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **6. Flow Portability — Duplicate, Export, and Import**
 - [x] **7. Flow Integrity Linting (save-time + pre-run)**
 - [x] **8. Per-Step Timeout Watchdog**
-- [ ] **9. Terminal Notifications for Background Runs**
+- [x] **9. Terminal Notifications for Background Runs**
 - [ ] **10. Headless CLI Mode (run flows non-interactively)**
 
 ---
@@ -294,7 +294,7 @@ Nothing in the engine bounds how long a step may run. A wedged agent (hung CLI, 
 
 ### 9. Terminal Notifications for Background Runs
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 The whole point of backgrounded runs (`esc` from the run screen) and the awaiting-input gate is that the user does something else while agents work — but Flows currently has no way to call them back. Emit a terminal bell and (where supported) a desktop notification when a run needs the user or finishes while they aren't looking at it.
