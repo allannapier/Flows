@@ -8,9 +8,10 @@ import { RunHistory } from "./RunHistory";
 import { RunDetail } from "./RunDetail";
 import { ConfirmDelete } from "./ConfirmDelete";
 import { SettingsScreen } from "./SettingsScreen";
+import { FilePrompt } from "./FilePrompt";
 import { isAttached } from "./attach-state";
 import { getActiveRun } from "../core/runManager";
-import { getFlow } from "../core/storage";
+import { getFlow, exportFlow, importFlow, slugifyFlowName } from "../core/storage";
 
 export type Screen =
   | { name: "list" }
@@ -22,16 +23,28 @@ export type Screen =
   | { name: "history"; flowId: string }
   | { name: "run-detail"; flowId: string; runId: string }
   | { name: "confirm-delete"; flowId: string }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "export-flow"; flowId: string }
+  | { name: "import-flow" };
 
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: "list" });
   // Bumped whenever we return to the list so FlowList re-reads storage.
   const [listKey, setListKey] = useState(0);
+  // Transient message shown once by FlowList after remounting (export/import
+  // outcome) — cleared on every plain goList() so it doesn't resurface later.
+  const [listStatus, setListStatus] = useState<string | undefined>(undefined);
   const renderer = useRenderer();
 
   const goList = useCallback(() => {
     setListKey((k) => k + 1);
+    setListStatus(undefined);
+    setScreen({ name: "list" });
+  }, []);
+
+  const goListWithStatus = useCallback((status: string) => {
+    setListKey((k) => k + 1);
+    setListStatus(status);
     setScreen({ name: "list" });
   }, []);
 
@@ -55,6 +68,7 @@ export function App() {
       return (
         <FlowList
           key={listKey}
+          initialStatus={listStatus}
           onRun={(flowId) => setScreen({ name: "run-params", flowId })}
           onResume={(flowId, runId) => setScreen({ name: "run", flowId, runId })}
           onNew={() => setScreen({ name: "edit" })}
@@ -62,6 +76,8 @@ export function App() {
           onHistory={(flowId) => setScreen({ name: "history", flowId })}
           onDelete={(flowId) => setScreen({ name: "confirm-delete", flowId })}
           onSettings={() => setScreen({ name: "settings" })}
+          onExport={(flowId) => setScreen({ name: "export-flow", flowId })}
+          onImport={() => setScreen({ name: "import-flow" })}
         />
       );
     case "edit":
@@ -116,5 +132,47 @@ export function App() {
       );
     case "settings":
       return <SettingsScreen onDone={goList} onCancel={() => setScreen({ name: "list" })} />;
+    case "export-flow": {
+      const flowId = screen.flowId;
+      const flow = getFlow(flowId);
+      const defaultPath = `./${slugifyFlowName(flow?.name ?? "flow")}.flow.json`;
+      return (
+        <FilePrompt
+          title="Export flow"
+          label={`Destination path for "${flow?.name ?? flowId}"`}
+          initialValue={defaultPath}
+          onSubmit={(value) => {
+            if (!value.trim()) return "Enter a destination path";
+            try {
+              const resolved = exportFlow(flowId, value.trim());
+              goListWithStatus(`Exported to ${resolved}`);
+              return undefined;
+            } catch (err) {
+              return err instanceof Error ? err.message : String(err);
+            }
+          }}
+          onCancel={() => setScreen({ name: "list" })}
+        />
+      );
+    }
+    case "import-flow":
+      return (
+        <FilePrompt
+          title="Import flow"
+          label="Source path"
+          initialValue=""
+          onSubmit={(value) => {
+            if (!value.trim()) return "Enter a source path";
+            try {
+              const flow = importFlow(value.trim());
+              goListWithStatus(`Imported "${flow.name}"`);
+              return undefined;
+            } catch (err) {
+              return err instanceof Error ? err.message : String(err);
+            }
+          }}
+          onCancel={() => setScreen({ name: "list" })}
+        />
+      );
   }
 }

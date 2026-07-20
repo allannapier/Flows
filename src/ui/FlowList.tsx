@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useState } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { SelectOption } from "@opentui/core";
-import { listFlows } from "../core/storage";
+import { listFlows, duplicateFlow } from "../core/storage";
 import { getInProgressRunForFlow } from "../core/runManager";
 import type { Flow } from "../types";
 import { colors, Hint } from "./theme";
@@ -11,6 +11,9 @@ const HINTS = [
   { keys: "n", label: "new" },
   { keys: "e", label: "edit" },
   { keys: "h", label: "history" },
+  { keys: "c", label: "duplicate" },
+  { keys: "x", label: "export" },
+  { keys: "i", label: "import" },
   { keys: "d", label: "delete" },
   { keys: "s", label: "settings" },
   { keys: "q", label: "quit" },
@@ -24,6 +27,9 @@ export function FlowList({
   onHistory,
   onDelete,
   onSettings,
+  onExport,
+  onImport,
+  initialStatus,
 }: {
   onRun: (flowId: string) => void;
   /** A run is already in progress for this flow — reattach to it instead of
@@ -34,9 +40,15 @@ export function FlowList({
   onHistory: (flowId: string) => void;
   onDelete: (flowId: string) => void;
   onSettings: () => void;
+  onExport: (flowId: string) => void;
+  onImport: () => void;
+  /** Transient status line to show on mount (e.g. after an export/import
+   * completed and navigated back here). */
+  initialStatus?: string;
 }) {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [status, setStatus] = useState<string | undefined>(initialStatus);
   const renderer = useRenderer();
   // getInProgressRunForFlow is read fresh on every render (see `options`
   // below), but nothing normally triggers a re-render while a background
@@ -81,6 +93,23 @@ export function FlowList({
       if (f) onDelete(f.id);
     } else if (key.name === "s") {
       onSettings();
+    } else if (key.name === "c") {
+      const f = flows[selectedIndex];
+      if (f) {
+        const copy = duplicateFlow(f.id);
+        if (copy) {
+          const updated = listFlows();
+          setFlows(updated);
+          const idx = updated.findIndex((x) => x.id === copy.id);
+          setSelectedIndex(idx >= 0 ? idx : selectedIndex);
+          setStatus(`Duplicated as "${copy.name}"`);
+        }
+      }
+    } else if (key.name === "x") {
+      const f = flows[selectedIndex];
+      if (f) onExport(f.id);
+    } else if (key.name === "i") {
+      onImport();
     } else if (key.name === "return") {
       const f = flows[selectedIndex];
       if (f) activate(f);
@@ -104,6 +133,7 @@ export function FlowList({
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1}>
         <ascii-font text="FLOWS" font="tiny" color={colors.accent} />
         <text fg={colors.textSecondary}>Run multi-step agent workflows</text>
+        {status && <text fg={colors.accent}>{status}</text>}
       </box>
       <box
         flexGrow={1}

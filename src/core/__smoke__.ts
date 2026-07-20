@@ -10,7 +10,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Flow, FlowStep, RunEvent } from "../types";
-import { deleteFlow, getFlow, listFlows, newFlowId, saveFlow } from "./storage";
+import {
+  deleteFlow,
+  duplicateFlow,
+  exportFlow,
+  getFlow,
+  importFlow,
+  listFlows,
+  newFlowId,
+  saveFlow,
+  slugifyFlowName,
+} from "./storage";
 import { renderParamsOnly, renderTemplate } from "./template";
 import { runFlow } from "./engine";
 import { buildAgentCommand } from "./agents";
@@ -63,6 +73,121 @@ async function testStorage(): Promise<void> {
   assert.equal(getFlow(id), undefined, "getFlow() should return undefined after delete");
 
   console.log("storage: OK");
+}
+
+async function testFlowPortability(): Promise<void> {
+  const original: Flow = {
+    id: newFlowId(),
+    name: "Portable Flow",
+    description: "A flow used by the portability smoke test.",
+    parameters: [{ name: "repoPath", description: "target repo", required: true }],
+    steps: [
+      {
+        id: "step-1",
+        name: "first",
+        agent: "custom",
+        customCommand: 'echo "$FLOW_PROMPT"',
+        prompt: "hello",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 0,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+  saveFlow(original);
+
+  // duplicateFlow
+  const copy = duplicateFlow(original.id);
+  assert.ok(copy, "duplicateFlow should return the new flow");
+  assert.notEqual(copy!.id, original.id, "copy should have a fresh id");
+  assert.equal(copy!.name, "Portable Flow (copy)");
+  assert.notEqual(copy!.steps[0]!.id, original.steps[0]!.id, "copy's step should have a fresh id");
+  const refetchedOriginal = getFlow(original.id);
+  assert.equal(refetchedOriginal?.name, "Portable Flow", "duplicating must not mutate the original");
+  assert.equal(duplicateFlow("does-not-exist"), undefined, "duplicateFlow of a missing id returns undefined");
+
+  // exportFlow
+  const exportDir = fs.mkdtempSync(path.join(os.tmpdir(), "flows-export-"));
+  const exportPath = path.join(exportDir, "portable-flow.flow.json");
+  try {
+    const resolved = exportFlow(original.id, exportPath);
+    assert.equal(resolved, path.resolve(exportPath));
+    const exported = JSON.parse(fs.readFileSync(resolved, "utf-8"));
+    assert.equal(exported.name, "Portable Flow");
+    assert.equal(exported.id, undefined, "exported JSON must not contain the machine-specific id");
+    assert.equal(exported.createdAt, undefined, "exported JSON must not contain createdAt");
+    assert.equal(exported.updatedAt, undefined, "exported JSON must not contain updatedAt");
+    assert.equal(exported.steps.length, 1);
+
+    let threw = false;
+    try {
+      exportFlow("does-not-exist", exportPath);
+    } catch (err) {
+      threw = true;
+      assert.ok(err instanceof Error);
+    }
+    assert.ok(threw, "exportFlow should throw for an unknown flow id");
+
+    // importFlow: fresh import recreates the flow with a new id.
+    deleteFlow(original.id);
+    const imported = importFlow(resolved);
+    assert.notEqual(imported.id, original.id);
+    assert.equal(imported.name, "Portable Flow", "no name collision -> no suffix");
+    assert.equal(imported.steps.length, 1);
+    assert.notEqual(imported.steps[0]!.id, "step-1", "imported step should get a fresh id");
+    assert.ok(getFlow(imported.id), "imported flow should be persisted");
+
+    // importFlow: name collision gets an "(imported)" suffix instead of
+    // overwriting the existing flow.
+    const importedAgain = importFlow(resolved);
+    assert.equal(importedAgain.name, "Portable Flow (imported)");
+    assert.notEqual(importedAgain.id, imported.id);
+    assert.ok(getFlow(imported.id), "original import must survive a second import");
+
+    // importFlow: malformed input is rejected and leaves storage untouched.
+    const badPath = path.join(exportDir, "bad.flow.json");
+    fs.writeFileSync(badPath, JSON.stringify({ name: "No steps here" }), "utf-8");
+    const before = listFlows().length;
+    threw = false;
+    try {
+      importFlow(badPath);
+    } catch (err) {
+      threw = true;
+      assert.ok(err instanceof Error);
+      assert.ok(/steps/i.test((err as Error).message));
+    }
+    assert.ok(threw, "importFlow should reject a flow with no steps array");
+    assert.equal(listFlows().length, before, "a failed import must not change storage");
+
+    fs.writeFileSync(path.join(exportDir, "not-json.flow.json"), "{not json", "utf-8");
+    threw = false;
+    try {
+      importFlow(path.join(exportDir, "not-json.flow.json"));
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, "importFlow should reject invalid JSON");
+
+    threw = false;
+    try {
+      importFlow(path.join(exportDir, "missing.flow.json"));
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, "importFlow should reject a missing file");
+
+    deleteFlow(imported.id);
+    deleteFlow(importedAgain.id);
+  } finally {
+    fs.rmSync(exportDir, { recursive: true, force: true });
+  }
+
+  assert.equal(slugifyFlowName("My Cool Flow!"), "my-cool-flow");
+  assert.equal(slugifyFlowName("   "), "flow");
+
+  console.log("flowPortability: OK");
 }
 
 function testTemplate(): void {
@@ -873,6 +998,7 @@ async function main(): Promise<void> {
   }
 
   await testStorage();
+  await testFlowPortability();
   testTemplate();
   testRenderParamsOnly();
   await testEngine();
