@@ -654,6 +654,66 @@ async function testEngineAlertOnFailure(): Promise<void> {
   console.log("engine alertOnFailure: OK");
 }
 
+async function testEngineStepTimeout(): Promise<void> {
+  const counterFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "flows-timeout-")), "count");
+  const flow: Flow = {
+    id: newFlowId(),
+    name: "Timeout Flow",
+    description: "One-step flow whose first attempt hangs past its timeout and is killed, then succeeds on retry.",
+    parameters: [],
+    steps: [
+      {
+        id: "step-1",
+        name: "maybe-hang",
+        agent: "custom",
+        customCommand: `n=$(cat '${counterFile}' 2>/dev/null || echo 0); echo $((n+1)) > '${counterFile}'; if [ "$n" -eq 0 ]; then sleep 30; fi; exit 0`,
+        prompt: "unused",
+        expectedResult: "N/A",
+        validate: false,
+        maxRetries: 1,
+        // 0.01 minutes = 600ms — plenty for the test, far less than "sleep 30".
+        timeoutMinutes: 0.01,
+      },
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+
+  const events: RunEvent[] = [];
+  const handle = runFlow(flow, {}, (e) => events.push(e));
+  await handle.done;
+
+  const timeoutEvent = events.find((e) => e.type === "step-timeout");
+  assert.ok(
+    timeoutEvent,
+    `expected a step-timeout event, got: ${events.map((e) => e.type).join(",")}`,
+  );
+  if (timeoutEvent && timeoutEvent.type === "step-timeout") {
+    assert.equal(timeoutEvent.minutes, 0.01);
+  }
+
+  assert.ok(
+    events.some((e) => e.type === "step-retry" && e.feedback.includes("timed out")),
+    `expected a step-retry mentioning the timeout, got: ${JSON.stringify(events.filter((e) => e.type === "step-retry"))}`,
+  );
+
+  assert.ok(
+    !events.some((e) => e.type === "flow-failed"),
+    `expected the retried attempt to succeed, got: ${JSON.stringify(events.filter((e) => e.type === "flow-failed"))}`,
+  );
+  const stepComplete = events.find((e) => e.type === "step-complete");
+  assert.ok(stepComplete, `expected a step-complete after the retry, got: ${events.map((e) => e.type).join(",")}`);
+  if (stepComplete && stepComplete.type === "step-complete") {
+    assert.deepEqual(
+      stepComplete.stats,
+      { turns: 2, tokensUsed: 0, errorCount: 1, estimatedCostUsd: undefined },
+      `expected turns=2/errorCount=1 (one timed-out attempt, one clean attempt), got: ${JSON.stringify(stepComplete.stats)}`,
+    );
+  }
+
+  console.log("engine step timeout: OK");
+}
+
 async function testEngineWorkingDir(): Promise<void> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "flows-workdir-"));
   try {
@@ -1096,6 +1156,7 @@ async function main(): Promise<void> {
   await testEngineContinuation();
   await testEngineWrite();
   await testEngineAlertOnFailure();
+  await testEngineStepTimeout();
   await testEngineWorkingDir();
   testConfig();
   testResolveValidator();

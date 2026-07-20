@@ -16,7 +16,17 @@ import {
   type KeyHintSpec,
 } from "./theme";
 
-type TextField = "name" | "customCommand" | "prompt" | "expectedResult" | "maxRetries" | "workingDir" | "onSuccess" | "onFailure" | "maxJumps";
+type TextField =
+  | "name"
+  | "customCommand"
+  | "prompt"
+  | "expectedResult"
+  | "maxRetries"
+  | "timeoutMinutes"
+  | "workingDir"
+  | "onSuccess"
+  | "onFailure"
+  | "maxJumps";
 
 /** Fields whose value is a {{...}} template that can be autocompleted. */
 type PlaceholderField = "prompt" | "expectedResult";
@@ -229,6 +239,7 @@ export function StepEditor({
     "pauseForReview",
     "alertOnFailure",
     "maxRetries",
+    "timeoutMinutes",
     "workingDir",
     "onSuccess",
     "onFailure",
@@ -317,6 +328,13 @@ export function StepEditor({
         case "maxRetries": {
           const n = Number.parseInt(fieldDraft, 10);
           return { ...d, maxRetries: clamp(Number.isNaN(n) ? 0 : n, 0, 5) };
+        }
+        case "timeoutMinutes": {
+          const trimmed = fieldDraft.trim();
+          if (trimmed === "") return { ...d, timeoutMinutes: undefined };
+          const n = Number.parseFloat(trimmed);
+          if (Number.isNaN(n) || n <= 0) return { ...d, timeoutMinutes: undefined };
+          return { ...d, timeoutMinutes: n };
         }
         case "workingDir":
           return { ...d, workingDir: fieldDraft || undefined };
@@ -408,6 +426,9 @@ export function StepEditor({
         break;
       case "maxRetries":
         beginEdit("maxRetries", String(draft.maxRetries));
+        break;
+      case "timeoutMinutes":
+        beginEdit("timeoutMinutes", draft.timeoutMinutes !== undefined ? String(draft.timeoutMinutes) : "");
         break;
       case "workingDir":
         beginEdit("workingDir", draft.workingDir ?? "");
@@ -751,6 +772,17 @@ export function StepEditor({
           onSubmit={commitField}
           value={String(draft.maxRetries)}
           placeholder="0"
+        />
+
+        <FieldRow
+          label="Timeout in minutes (blank = none)"
+          selected={isRow("timeoutMinutes")}
+          editing={editingField === "timeoutMinutes"}
+          fieldDraft={fieldDraft}
+          onInput={setFieldDraft}
+          onSubmit={commitField}
+          value={draft.timeoutMinutes !== undefined ? String(draft.timeoutMinutes) : ""}
+          placeholder="(none)"
         />
 
         <FieldRow

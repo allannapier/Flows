@@ -98,6 +98,16 @@ export interface FlowStep {
    * routed, as normal — once the user dismisses the alert.
    */
   alertOnFailure?: boolean;
+  /**
+   * Maximum time, in minutes, a single agent turn/attempt of this step may
+   * run before the engine kills it and treats the attempt as a failure —
+   * maxRetries, routing.onFailure, and alertOnFailure all apply exactly as
+   * they would for a validation failure. Absent or 0 means no timeout
+   * (current behaviour). Time spent gated on the user (awaiting-input or an
+   * unacknowledged alertOnFailure) never counts toward this — the timer only
+   * runs while a turn/process is actually in flight.
+   */
+  timeoutMinutes?: number;
 }
 
 export interface Flow {
@@ -162,6 +172,11 @@ export type RunEvent =
   | { type: "validation-start"; stepIndex: number }
   | { type: "validation-result"; stepIndex: number; verdict: ValidationVerdict }
   | { type: "step-retry"; stepIndex: number; attempt: number; feedback: string }
+  /** A step's `timeoutMinutes` was exceeded while waiting on an agent
+   * turn/process. Emitted just before the engine kills that turn/process and
+   * treats the attempt as a failure (see FlowStep.timeoutMinutes) — the
+   * "step-retry" or "step-failed" that follows explains the outcome. */
+  | { type: "step-timeout"; stepIndex: number; minutes: number }
   | { type: "step-complete"; stepIndex: number; output: string; stats: StepStats }
   | { type: "step-failed"; stepIndex: number; error: string; stats: StepStats }
   | { type: "session-note"; stepIndex: number; note: string }
