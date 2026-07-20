@@ -13,7 +13,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **5. Reusable Flows — Templated & Flow-Level Working Directory**
 - [x] **6. Flow Portability — Duplicate, Export, and Import**
 - [x] **7. Flow Integrity Linting (save-time + pre-run)**
-- [ ] **8. Per-Step Timeout Watchdog**
+- [x] **8. Per-Step Timeout Watchdog**
 - [ ] **9. Terminal Notifications for Background Runs**
 - [ ] **10. Headless CLI Mode (run flows non-interactively)**
 
@@ -267,7 +267,7 @@ Several editing operations can silently corrupt a flow today: renaming a step br
 
 ### 8. Per-Step Timeout Watchdog
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Nothing in the engine bounds how long a step may run. A wedged agent (hung CLI, network stall, a Gemini session that never goes quiescent) leaves the flow "running" forever — especially bad for backgrounded runs the user isn't watching. Add an opt-in per-step timeout: when a turn exceeds it, the attempt is treated as a failed attempt (so retries/routing/alerts apply), instead of hanging.

@@ -77,6 +77,10 @@ const RETRY_CONTEXT_TEMPLATE = (feedback: string) =>
   `Validator feedback: ${feedback}\n` +
   `Please address the feedback and try again.`;
 
+function timeoutFeedback(minutes: number): string {
+  return `Step timed out after ${minutes} minutes`;
+}
+
 const TURN_JOIN = "\n\n---\n\n";
 
 const DEFAULT_COLS = 120;
@@ -518,7 +522,19 @@ export function runFlow(
       });
       currentSession = session;
 
+      const stepTimeoutMinutes = step.timeoutMinutes;
+      let timedOut = false;
+      const timeoutTimer =
+        stepTimeoutMinutes && stepTimeoutMinutes > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              onEvent({ type: "step-timeout", stepIndex, minutes: stepTimeoutMinutes });
+              session.kill();
+            }, stepTimeoutMinutes * 60_000)
+          : null;
+
       const exitCode = await session.exited;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       currentSession = null;
 
       // Mark this (agent, cwd) pair as having run at least one attempt,
@@ -534,6 +550,17 @@ export function runFlow(
       }
 
       const stepText = cleanOutput(session.raw, liveCols, liveRows);
+
+      if (timedOut) {
+        const feedback = timeoutFeedback(stepTimeoutMinutes!);
+        errorCount++;
+        if (attempt < maxAttempts) {
+          onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback });
+          retryFeedback = feedback;
+          continue;
+        }
+        return reportStepFailure(step, stepIndex, feedback, buildStats());
+      }
 
       if (exitCode !== 0) {
         const feedback = `Agent exited with code ${exitCode}`;
@@ -683,20 +710,53 @@ export function runFlow(
       return liveSessions.get(step.agent)?.session;
     }
 
+    const stepTimeoutMinutes = step.timeoutMinutes;
+
     // --- Turn loop: initial turn + validation retries (typed, not respawned). ---
     while (true) {
       const abort = new AbortController();
       waitAbort = abort;
+
+      // Armed fresh for every turn wait (initial turn and each retry) so a
+      // turn always gets the full timeout — and never armed around the
+      // awaiting-input/alert gates below, since user thinking time isn't
+      // agent time.
+      let timedOut = false;
+      const timeoutTimer =
+        stepTimeoutMinutes && stepTimeoutMinutes > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              onEvent({ type: "step-timeout", stepIndex, minutes: stepTimeoutMinutes });
+              killLiveSession(step.agent);
+              abort.abort();
+            }, stepTimeoutMinutes * 60_000)
+          : null;
+
       const active = currentLive();
       const result = active ? await active.awaitTurn(abort.signal) : await waitForAbort(abort.signal);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       waitAbort = null;
 
       if (cancelled) {
         emitCancelledIfNeeded();
         return "cancelled";
       }
+      if (timedOut) {
+        const feedback = timeoutFeedback(stepTimeoutMinutes!);
+        errorCount++;
+        if (attempt < maxAttempts) {
+          onEvent({ type: "step-retry", stepIndex, attempt: attempt + 1, feedback });
+          attempt++;
+          // Retried attempts always start a fresh session, even with
+          // continueSession set — the old one was just killed.
+          startFreshInteractiveSession(step, stepIndex, basePrompt + RETRY_CONTEXT_TEMPLATE(feedback), resolvedCwd);
+          onEvent({ type: "step-start", stepIndex, stepName: step.name, agent: step.agent, attempt });
+          continue;
+        }
+        return reportStepFailure(step, stepIndex, feedback, buildStats());
+      }
       if (result.aborted) {
-        // Shouldn't happen outside cancellation in this loop; treat
+        // Shouldn't happen outside cancellation/timeout in this loop; treat
         // defensively as "keep waiting" rather than losing the turn.
         continue;
       }

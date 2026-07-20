@@ -199,6 +199,10 @@ export function startRun(flow: Flow, params: Record<string, string>, options?: R
           run.stepStatuses[e.stepIndex] = "retrying";
           run.statusMessage = { text: `retrying (attempt ${e.attempt}): ${e.feedback}`, kind: "warning" };
           break;
+        case "step-timeout":
+          run.statusMessage = { text: `step ${e.stepIndex + 1} timed out after ${e.minutes}m`, kind: "warning" };
+          run.feedLog.push(`\r\n\x1b[2m[timeout] step timed out after ${e.minutes}m\x1b[0m\r\n`);
+          break;
         case "step-awaiting-input":
           run.status = "awaiting-input";
           run.statusMessage = { text: e.message, kind: "warning" };
