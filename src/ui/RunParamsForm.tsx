@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import type { TabSelectOption, TabSelectRenderable } from "@opentui/core";
 import { getFlow } from "../core/storage";
+import { lintFlow } from "../core/lint";
 import type { Flow } from "../types";
 import { colors, Hint, RowHint, Button, marker, type KeyHintSpec } from "./theme";
 
@@ -21,6 +22,11 @@ export function RunParamsForm({
 }) {
   const flow: Flow | undefined = useMemo(() => getFlow(flowId), [flowId]);
   const params = flow?.parameters ?? [];
+  // Refuse to start a run whose flow has integrity errors (out-of-range
+  // routing, references to unknown params/steps, ...) rather than letting
+  // it fail mid-run — most relevant for imported or hand-edited flow JSON
+  // that never passed through the editor's own save-time lint.
+  const lintErrors = useMemo(() => (flow ? lintFlow(flow).filter((i) => i.severity === "error") : []), [flow]);
 
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
@@ -48,13 +54,14 @@ export function RunParamsForm({
   // the identical gotoBufferEnd fix in theme.tsx's TextAreaFieldRow).
   const initializedTabSelects = useRef<Record<string, TabSelectRenderable>>({});
 
-  // Flows with no parameters skip straight to running.
+  // Flows with no parameters skip straight to running — unless the flow
+  // has lint errors, in which case we stay put and show them instead.
   useEffect(() => {
-    if (flow && params.length === 0) {
+    if (flow && params.length === 0 && lintErrors.length === 0) {
       onStart({});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flow]);
+  }, [flow, lintErrors.length]);
 
   function trySubmit(candidate: Record<string, string>) {
     for (let i = 0; i < params.length; i++) {
@@ -92,6 +99,33 @@ export function RunParamsForm({
     return (
       <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg} padding={2}>
         <text fg={colors.error}>Flow not found: {flowId}</text>
+        <Hint hints={[{ keys: "esc", label: "back" }]} />
+      </box>
+    );
+  }
+
+  if (lintErrors.length > 0) {
+    return (
+      <box flexDirection="column" flexGrow={1} backgroundColor={colors.bg}>
+        <box paddingLeft={1} paddingTop={1}>
+          <text fg={colors.error}>"{flow.name}" can't be run — fix these first:</text>
+        </box>
+        <box
+          flexGrow={1}
+          flexDirection="column"
+          border
+          borderStyle="rounded"
+          borderColor={colors.error}
+          margin={1}
+          padding={1}
+        >
+          {lintErrors.map((issue, i) => (
+            <text key={i} fg={colors.error}>
+              {issue.stepIndex !== undefined ? `Step ${issue.stepIndex + 1}: ` : ""}
+              {issue.message}
+            </text>
+          ))}
+        </box>
         <Hint hints={[{ keys: "esc", label: "back" }]} />
       </box>
     );

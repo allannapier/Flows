@@ -21,7 +21,8 @@ import {
   saveFlow,
   slugifyFlowName,
 } from "./storage";
-import { renderParamsOnly, renderTemplate } from "./template";
+import { renderParamsOnly, renderTemplate, renameStepReferences, listPlaceholders } from "./template";
+import { lintFlow } from "./lint";
 import { runFlow } from "./engine";
 import { buildAgentCommand } from "./agents";
 import { loadConfig, saveConfig, resolveValidator, maskKey } from "./config";
@@ -239,6 +240,91 @@ function testRenderParamsOnly(): void {
   assert.ok(threw, "renderParamsOnly should reject {{steps.*.output}} placeholders");
 
   console.log("renderParamsOnly: OK");
+}
+
+function makeLintStep(overrides: Partial<FlowStep> & Pick<FlowStep, "name">): FlowStep {
+  return {
+    id: crypto.randomUUID(),
+    agent: "custom",
+    customCommand: 'echo "$FLOW_PROMPT"',
+    prompt: "do the thing",
+    expectedResult: "the thing is done",
+    validate: false,
+    maxRetries: 0,
+    ...overrides,
+  };
+}
+
+function testListPlaceholders(): void {
+  const found = listPlaceholders("Hi {{params.name}}, see {{ steps.first.output }} and {{???}}.");
+  assert.deepEqual(
+    found.map((p) => [p.kind, p.name]),
+    [
+      ["params", "name"],
+      ["steps", "first"],
+      ["other", undefined],
+    ],
+  );
+  console.log("listPlaceholders: OK");
+}
+
+function testRenameStepReferences(): void {
+  const rewritten = renameStepReferences(
+    "First said: {{steps.first.output}}. Second said: {{ steps.second.output }}.",
+    "first",
+    "renamed",
+  );
+  assert.equal(rewritten, "First said: {{steps.renamed.output}}. Second said: {{ steps.second.output }}.");
+  assert.equal(renameStepReferences("no placeholders here", "first", "renamed"), "no placeholders here");
+  console.log("renameStepReferences: OK");
+}
+
+function testLintFlow(): void {
+  const clean: Flow = {
+    id: newFlowId(),
+    name: "Clean Flow",
+    description: "",
+    parameters: [{ name: "repo", description: "", required: true, default: "a", choices: ["a", "b"] }],
+    steps: [
+      makeLintStep({ name: "first", prompt: "clone {{params.repo}}" }),
+      makeLintStep({ name: "second", prompt: "review {{steps.first.output}}", routing: { onSuccess: 0, onFailure: undefined } }),
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+  assert.deepEqual(lintFlow(clean), [], "a well-formed flow should have no lint issues");
+
+  const broken: Flow = {
+    id: newFlowId(),
+    name: "Broken Flow",
+    description: "",
+    parameters: [{ name: "repo", description: "", required: true, default: "z", choices: ["a", "b"] }],
+    steps: [
+      makeLintStep({ name: "dup", prompt: "uses {{params.missingParam}}" }),
+      makeLintStep({ name: "dup", prompt: "refs {{steps.nonexistent.output}}", routing: { onSuccess: 99 } }),
+      makeLintStep({ name: "later", prompt: "refs {{steps.later.output}} and {{steps.dup.output}}", agent: "custom", customCommand: "" }),
+    ],
+    workingDir: "{{steps.dup.output}}",
+    createdAt: "",
+    updatedAt: "",
+  };
+  const issues = lintFlow(broken);
+  const errors = issues.filter((i) => i.severity === "error").map((i) => i.message);
+  const warnings = issues.filter((i) => i.severity === "warning").map((i) => i.message);
+
+  assert.ok(errors.some((m) => m.includes("{{params.missingParam}}")), "should flag unknown parameter");
+  assert.ok(errors.some((m) => m.includes("{{steps.nonexistent.output}}")), "should flag unknown step reference");
+  assert.ok(errors.some((m) => m.includes("out of range")), "should flag out-of-range routing");
+  assert.ok(errors.some((m) => m.includes("custom agent but has no command")), "should flag empty custom command");
+  assert.ok(
+    errors.some((m) => m.includes("working directory references") && m.includes("not allowed in a working directory")),
+    "should flag {{steps.*.output}} in a working directory",
+  );
+  assert.ok(warnings.some((m) => m.includes('named "dup"')), "should warn on duplicate step names");
+  assert.ok(warnings.some((m) => m.includes("runs at or after this step")), "should warn on a self/forward step reference");
+  assert.ok(warnings.some((m) => m.includes("isn't one of its choices")), "should warn on default not in choices");
+
+  console.log("lintFlow: OK");
 }
 
 async function testEngine(): Promise<void> {
@@ -1001,6 +1087,9 @@ async function main(): Promise<void> {
   await testFlowPortability();
   testTemplate();
   testRenderParamsOnly();
+  testListPlaceholders();
+  testRenameStepReferences();
+  testLintFlow();
   await testEngine();
   await testEngineStepStatsOnRetry();
   testBuildAgentCommand();

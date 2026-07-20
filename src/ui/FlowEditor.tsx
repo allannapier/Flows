@@ -1,10 +1,46 @@
 import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { getFlow, saveFlow, newFlowId } from "../core/storage";
+import { lintFlow, type FlowLintIssue } from "../core/lint";
+import { renameStepReferences } from "../core/template";
 import type { Flow, FlowParameter, FlowStep } from "../types";
 import { colors, Hint, SimpleRow, FieldRow, ButtonRow, type KeyHintSpec } from "./theme";
 import { ParamForm } from "./ParamForm";
 import { StepEditor } from "./StepEditor";
+
+/** Remaps (or clears) step-index routing targets across every step, used
+ * when the step list is reordered or a step is deleted. `map(i)` returns
+ * the new index for old index `i`, or `null` when that step no longer
+ * exists (routing pointing at it is cleared). Returns the names of steps
+ * whose routing was cleared so the caller can surface a notice. */
+function remapRoutingAcrossSteps(
+  steps: FlowStep[],
+  map: (i: number) => number | null,
+): { steps: FlowStep[]; clearedStepNames: string[] } {
+  const clearedStepNames: string[] = [];
+  const nextSteps = steps.map((s) => {
+    if (!s.routing) return s;
+    const remap = (idx: number | undefined): number | undefined => {
+      if (idx === undefined) return undefined;
+      const mapped = map(idx);
+      if (mapped === null) {
+        clearedStepNames.push(s.name || "(unnamed step)");
+        return undefined;
+      }
+      return mapped;
+    };
+    const onSuccess = remap(s.routing.onSuccess);
+    const onFailure = remap(s.routing.onFailure);
+    if (onSuccess === s.routing.onSuccess && onFailure === s.routing.onFailure) return s;
+    const routing: FlowStep["routing"] = { ...s.routing };
+    if (onSuccess === undefined) delete routing.onSuccess;
+    else routing.onSuccess = onSuccess;
+    if (onFailure === undefined) delete routing.onFailure;
+    else routing.onFailure = onFailure;
+    return { ...s, routing: Object.keys(routing).length > 0 ? routing : undefined };
+  });
+  return { steps: nextSteps, clearedStepNames: [...new Set(clearedStepNames)] };
+}
 
 type RowKind =
   | { kind: "name" }
@@ -63,7 +99,10 @@ export function FlowEditor({
   onCancel,
 }: {
   flowId?: string;
-  onDone: () => void;
+  /** Called after a successful save. `status`, when present, is a
+   *  transient message (e.g. save-time lint warnings) to surface on the
+   *  flow list the caller navigates back to. */
+  onDone: (status?: string) => void;
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState<Flow>(() => {
@@ -80,6 +119,8 @@ export function FlowEditor({
   const [paramFormIndex, setParamFormIndex] = useState<number | null>(null);
   const [stepFormIndex, setStepFormIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lintIssues, setLintIssues] = useState<FlowLintIssue[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const rows = totalRows(draft);
   const safeCursor = Math.max(0, Math.min(cursor, rows - 1));
@@ -87,11 +128,27 @@ export function FlowEditor({
   function doSave() {
     if (draft.name.trim() === "") {
       setError("Flow name is required");
+      setLintIssues([]);
       setCursor(0);
       return;
     }
-    saveFlow({ ...draft, name: draft.name.trim() });
-    onDone();
+    const toSave = { ...draft, name: draft.name.trim() };
+    const issues = lintFlow(toSave);
+    const errors = issues.filter((i) => i.severity === "error");
+    if (errors.length > 0) {
+      setError(null);
+      setLintIssues(errors);
+      return;
+    }
+    setError(null);
+    setLintIssues([]);
+    saveFlow(toSave);
+    const warnings = issues.filter((i) => i.severity === "warning");
+    onDone(
+      warnings.length > 0
+        ? `Saved with ${warnings.length} warning${warnings.length === 1 ? "" : "s"}: ${warnings.map((w) => w.message).join("; ")}`
+        : undefined,
+    );
   }
 
   function beginEditField(field: "name" | "description" | "workingDir") {
@@ -119,7 +176,17 @@ export function FlowEditor({
       setDraft((d) => ({ ...d, parameters: d.parameters.filter((_, i) => i !== row.index) }));
       setCursor((c) => Math.max(0, c - 1));
     } else if (row.kind === "step") {
-      setDraft((d) => ({ ...d, steps: d.steps.filter((_, i) => i !== row.index) }));
+      const removedIdx = row.index;
+      setDraft((d) => {
+        const remaining = d.steps.filter((_, i) => i !== removedIdx);
+        const { steps, clearedStepNames } = remapRoutingAcrossSteps(remaining, (i) =>
+          i === removedIdx ? null : i > removedIdx ? i - 1 : i,
+        );
+        if (clearedStepNames.length > 0) {
+          setNotice(`Cleared routing on ${clearedStepNames.join(", ")} — target step was deleted`);
+        }
+        return { ...d, steps };
+      });
       setCursor((c) => Math.max(0, c - 1));
     }
   }
@@ -132,7 +199,8 @@ export function FlowEditor({
       const tmp = steps[index]!;
       steps[index] = steps[target]!;
       steps[target] = tmp;
-      return { ...d, steps };
+      const { steps: remapped } = remapRoutingAcrossSteps(steps, (i) => (i === index ? target : i === target ? index : i));
+      return { ...d, steps: remapped };
     });
     setCursor((c) => c + dir);
   }
@@ -272,9 +340,24 @@ export function FlowEditor({
         onCancel={() => setMode("browse")}
         onSave={(s) => {
           setDraft((d) => {
+            const oldName = stepFormIndex !== null ? d.steps[stepFormIndex]?.name : undefined;
             const steps = [...d.steps];
-            if (stepFormIndex === null) steps.push(s);
-            else steps[stepFormIndex] = s;
+            if (stepFormIndex === null) {
+              steps.push(s);
+            } else {
+              steps[stepFormIndex] = s;
+              if (oldName !== undefined && oldName !== s.name) {
+                for (let i = 0; i < steps.length; i++) {
+                  if (i === stepFormIndex) continue;
+                  const other = steps[i]!;
+                  steps[i] = {
+                    ...other,
+                    prompt: renameStepReferences(other.prompt, oldName, s.name),
+                    expectedResult: renameStepReferences(other.expectedResult, oldName, s.name),
+                  };
+                }
+              }
+            }
             return { ...d, steps };
           });
           setMode("browse");
@@ -425,6 +508,19 @@ export function FlowEditor({
           ]}
         />
         {error && <text fg={colors.error}>{error}</text>}
+        {notice && <text fg={colors.warning}>{notice}</text>}
+        {lintIssues.length > 0 && (
+          <box flexDirection="column">
+            <text fg={colors.error}>Fix these before saving:</text>
+            {lintIssues.map((issue, i) => (
+              <text key={i} fg={colors.error}>
+                {"  "}
+                {issue.stepIndex !== undefined ? `Step ${issue.stepIndex + 1}: ` : ""}
+                {issue.message}
+              </text>
+            ))}
+          </box>
+        )}
       </box>
       <Hint hints={bottomHints} />
     </box>
