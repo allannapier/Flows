@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flows — a guide to the terminal UI for orchestrating coding agents</title>
+<meta name="description" content="A guide to Flows: how flows, steps, validation, and agent sessions work, with screenshots of every screen.">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><rect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%231a1b26%22/><rect x=%223%22 y=%223%22 width=%2210%22 height=%222%22 fill=%22%2334d399%22/><rect x=%223%22 y=%227%22 width=%227%22 height=%222%22 fill=%22%2334d399%22/></svg>">
+</head>
+<body>
+<div class="layout">
+  <nav class="toc" aria-label="Table of contents">
+    <div class="brand"><span class="dot"></span><span>FLOWS GUIDE</span></div>
+
+    <div class="toc-group">Overview</div>
+    <a href="#overview">What Flows is</a>
+    <a href="#concepts">Core concepts</a>
+    <a href="#agents">Supported agents</a>
+
+    <div class="toc-group">Using it</div>
+    <a href="#building">Building a flow</a>
+    <a href="#running">Running a flow</a>
+    <a href="#attaching">Attaching &amp; answering</a>
+    <a href="#validation">Validation &amp; retries</a>
+    <a href="#history">Run history</a>
+    <a href="#templates">Prompt templates</a>
+    <a href="#settings">Settings</a>
+
+    <div class="toc-group">Reference</div>
+    <a href="#keyboard">Keyboard reference</a>
+    <a href="#install">Install &amp; run</a>
+    <a href="#architecture">Under the hood</a>
+  </nav>
+
+  <details class="mobile-toc">
+    <summary>On this page</summary>
+    <div class="toc-body">
+      <a href="#overview">What Flows is</a>
+      <a href="#concepts">Core concepts</a>
+      <a href="#agents">Supported agents</a>
+      <a href="#building">Building a flow</a>
+      <a href="#running">Running a flow</a>
+      <a href="#attaching">Attaching &amp; answering</a>
+      <a href="#validation">Validation &amp; retries</a>
+      <a href="#history">Run history</a>
+      <a href="#templates">Prompt templates</a>
+      <a href="#settings">Settings</a>
+      <a href="#keyboard">Keyboard reference</a>
+      <a href="#install">Install &amp; run</a>
+      <a href="#architecture">Under the hood</a>
+    </div>
+  </details>
+
+  <main>
+    <header class="page-header" id="overview">
+      <div class="kicker">Guide · not a product page</div>
+      <h1>Flows</h1>
+      <p class="lede">
+        Flows is a terminal UI for orchestrating coding agents. You define a
+        <strong>flow</strong> — a sequence of steps, each with a prompt, an agent to run it,
+        and a desired result — and Flows runs it end-to-end, using a built-in LLM
+        connection to check each step's output before moving on. This page walks through
+        how it's put together and how it looks on screen. It's a reference, not a pitch.
+      </p>
+    </header>
+
+    <section id="overview-what">
+      <p>
+        Flows is built with <a href="https://opentui.com/">OpenTUI</a>
+        (<code>@opentui/react</code>) on <a href="https://bun.sh">Bun</a>. It runs entirely
+        in your terminal: no browser, no separate server. Each agent runs as a real
+        interactive terminal session inside a PTY, so you can watch it work and step in
+        when it needs you.
+      </p>
+    </section>
+
+    <h2 id="concepts">Core concepts</h2>
+    <p>Four ideas recur throughout the app:</p>
+    <ul>
+      <li>
+        <strong>Flow</strong> — a named, reusable workflow: a description, an optional
+        set of typed <strong>parameters</strong>, an optional default working directory,
+        and an ordered list of steps.
+      </li>
+      <li>
+        <strong>Step</strong> — one unit of work within a flow: which agent runs it, the
+        prompt template to send, the expected result used to judge success, and behavior
+        like retries, session continuation, and pause-for-review.
+      </li>
+      <li>
+        <strong>Run</strong> — one execution of a flow with concrete parameter values.
+        Flows keeps history for every run: status, duration, and per-step output.
+      </li>
+      <li>
+        <strong>Validator</strong> — a separate, configurable LLM that reads each step's
+        output against its expected result and decides whether the step passed, should
+        retry, or is waiting on a question for you.
+      </li>
+    </ul>
+
+    <figure>
+      <img src="assets/img/00-flow-list.png" alt="The Flows list screen showing two saved flows, 'Add a changelog entry' and 'Fix a failing test', with a keyboard hint bar at the bottom.">
+      <figcaption>The flow list — the app's home screen. Every flow you've saved lives here.</figcaption>
+    </figure>
+
+    <h2 id="agents">Supported agents</h2>
+    <p>
+      The first four agents run <strong>interactively</strong>: Flows launches the agent's
+      own terminal UI inside a PTY and drives it turn by turn. Three of them expose a hook
+      Flows can listen to for "this turn is done," so there's no fragile timeout guessing;
+      Gemini CLI is detected by output quiescence instead.
+    </p>
+    <div class="table-scroll"><table>
+      <thead>
+        <tr><th>Agent</th><th>Invocation</th><th>Turn detection</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Claude Code</td>
+          <td><code>claude &lt;prompt&gt; --permission-mode acceptEdits --settings &lt;generated&gt;</code></td>
+          <td><code>Stop</code> hook writes the last assistant message to a generated settings file</td>
+        </tr>
+        <tr>
+          <td>OpenCode</td>
+          <td><code>opencode --prompt &lt;prompt&gt; --auto &lt;cwd&gt;</code></td>
+          <td>generated plugin listens for <code>session.idle</code> and fetches the last message via the SDK</td>
+        </tr>
+        <tr>
+          <td>Codex CLI</td>
+          <td><code>codex &lt;prompt&gt; -c notify=[…] -C &lt;cwd&gt; -a never -s workspace-write</code></td>
+          <td><code>notify</code> program receives <code>agent-turn-complete</code></td>
+        </tr>
+        <tr>
+          <td>Gemini CLI</td>
+          <td><code>gemini</code> (prompt typed as the first turn)</td>
+          <td>output quiescence (~3s of silence) — a heuristic; step output may include some UI chrome</td>
+        </tr>
+        <tr>
+          <td>Custom</td>
+          <td>any shell command; the rendered prompt is exposed as <code>$FLOW_PROMPT</code></td>
+          <td>process exit (non-interactive)</td>
+        </tr>
+      </tbody>
+    </table></div>
+    <p>
+      A single flow can mix agents — implement with Claude Code, review with OpenCode —
+      each keeping its own live session. A step can also turn on
+      <strong>Continue session</strong> to chain into the same conversation as the previous
+      step that used the same agent and working directory, instead of starting fresh.
+    </p>
+
+    <h2 id="building">Building a flow</h2>
+    <p>
+      <kbd>n</kbd> from the flow list opens the workflow creator. A flow has a name, an
+      optional description, an optional default working directory (which can reference
+      <code>{{params.*}}</code>), a list of parameters, and a list of steps.
+    </p>
+    <figure>
+      <img src="assets/img/01-flow-editor.png" alt="The workflow creator showing a flow named 'Fix a failing test' with one parameter (repoPath) and two steps: 'Reproduce & fix' running on Claude Code, and 'Review the fix' running on OpenCode.">
+      <figcaption>The workflow creator: name, description, working directory, parameters, and steps in one form.</figcaption>
+    </figure>
+    <p>Each step opens its own editor:</p>
+    <figure>
+      <img src="assets/img/02-step-editor.png" alt="The step editor showing a step named 'Reproduce & fix', agent set to Claude Code, a prompt referencing {{params.repoPath}}, an expected result for the validator, and toggles for validation, session continuation, pause for review, and retry/failure-routing settings.">
+      <figcaption>A step: agent, prompt, expected result, and how it should behave on success or failure.</figcaption>
+    </figure>
+    <p>Fields worth knowing about:</p>
+    <ul>
+      <li><strong>Prompt</strong> — the text sent to the agent. Supports the template placeholders described in <a href="#templates">Prompt templates</a> below.</li>
+      <li><strong>Expected result</strong> — what the validator checks the agent's output against. Left blank, the step still runs but nothing judges it.</li>
+      <li><strong>Validate output</strong> — turn validation off for steps where you don't want an LLM judging the result (formatters, linters, anything with its own pass/fail signal).</li>
+      <li><strong>Continue session</strong> — chain into the previous step's live conversation with the same agent, instead of starting a new one.</li>
+      <li><strong>Pause for review</strong> — always stop after this step so you can look before the flow continues, regardless of what the validator thinks.</li>
+      <li><strong>On success / On failure</strong> — jump to a specific step number instead of the default (next step, or fail the flow) — useful for simple branching.</li>
+    </ul>
+
+    <h2 id="running">Running a flow</h2>
+    <p>
+      <kbd>⏎</kbd> on a flow prompts for its parameter values, then starts the run.
+    </p>
+    <figure>
+      <img src="assets/img/03-run-params.png" alt="The run parameters screen for 'Fix a failing test', with the repoPath parameter filled in as /home/user/my-project and a Start flow button.">
+      <figcaption>Parameter entry — one field per declared parameter, required ones marked with <code>*</code>.</figcaption>
+    </figure>
+    <p>
+      Once started, the run screen shows a live checklist of steps next to the agent's
+      actual terminal, rendered through
+      <a href="https://www.npmjs.com/package/ghostty-opentui">ghostty-opentui</a> so colors,
+      progress bars, and TTY-gated output all work the way they would in a normal terminal.
+    </p>
+    <figure>
+      <img src="assets/img/04-run-screen.png" alt="A run screen mid-flow: the Steps panel shows 'Check formatting' with a green checkmark, and the Terminal panel shows the command's real output ending in 'All files formatted correctly.' A 'Flow complete' status line is shown at the bottom.">
+      <figcaption>A completed run: the steps panel on the left, the agent's real terminal output on the right.</figcaption>
+    </figure>
+    <p>
+      Each step's status marker means: <code>○</code> pending, running (highlighted, no
+      mark yet), <code>✓</code> passed, <code>✗</code> failed. After the last step
+      finishes, that step's agent session stays alive — you can keep attaching and talking
+      to it until you close it or start another run.
+    </p>
+
+    <h2 id="attaching">Attaching &amp; answering the agent</h2>
+    <p>
+      Agents run as real interactive terminal sessions, so sometimes they ask you
+      something mid-step — a permission prompt, a clarifying question. When that happens
+      the run pauses in an <strong>awaiting-input</strong> state (the pane border
+      highlights and the hint line changes):
+    </p>
+    <ul>
+      <li><kbd>a</kbd> — attach. Every keystroke now goes straight into the agent's own terminal UI: type an answer, drive its menus, answer its permission prompts. <kbd>ctrl+]</kbd> detaches again.</li>
+      <li><kbd>f</kbd> — continue the flow without answering further.</li>
+      <li><kbd>c</kbd> — cancel the run.</li>
+    </ul>
+    <p>
+      With validation on, the flow resumes automatically once a later turn passes
+      validation and the validator sees no more open questions — you don't have to
+      babysit it. While a step runs (not just when it's stuck), you can attach at any time
+      to watch or intervene, including answering the agent CLI's own prompts.
+      <kbd>ctrl+c</kbd> quits Flows everywhere except while attached, where it's sent to
+      the agent instead.
+    </p>
+
+    <h2 id="validation">Validation &amp; retries</h2>
+    <p>
+      After each step, the configured validator LLM compares the agent's output against
+      the step's expected result. Three outcomes:
+    </p>
+    <ul>
+      <li><strong>Pass</strong> — the flow moves to the next step (or the success-routing target, if set).</li>
+      <li><strong>Fail</strong> — the step retries, with the validator's feedback sent as a follow-up turn in the <em>same</em> conversation, up to the step's configured retry limit.</li>
+      <li><strong>Needs input</strong> — the validator detects the agent is asking a question, and the run pauses as <a href="#attaching">awaiting-input</a>.</li>
+    </ul>
+    <p>
+      The validator is a separate LLM connection from the coding agents themselves — see
+      <a href="#settings">Settings</a> for how it's configured.
+    </p>
+
+    <h2 id="history">Run history</h2>
+    <p>
+      <kbd>h</kbd> on a flow lists every run: status, parameters used, and duration.
+    </p>
+    <figure>
+      <img src="assets/img/05-run-history.png" alt="Run history for 'Demo: format check' showing two completed runs, each marked complete and taking 1 second.">
+      <figcaption>Run history — every past run of a flow, with status and duration.</figcaption>
+    </figure>
+    <p>Statuses you'll see: <code>complete</code>, <code>failed</code>, <code>cancelled</code>,
+    <code>running</code> / <code>awaiting input</code> (still live — <kbd>⏎</kbd> re-attaches),
+    and <code>interrupted</code> (Flows exited while it was running; marked as such the next
+    time it starts).</p>
+
+    <h2 id="templates">Prompt templates</h2>
+    <p>Step prompts and working directories support two placeholder forms:</p>
+    <ul>
+      <li><code>{{params.&lt;name&gt;}}</code> — a flow parameter's value.</li>
+      <li><code>{{steps.&lt;stepName&gt;.output}}</code> — an earlier step's output: every
+        assistant turn from that step (including anything it said after you answered a
+        question), joined with <code>---</code> separators.</li>
+    </ul>
+    <p>That lets later steps build directly on earlier results:</p>
+    <pre><code>Review the changes described below and fix any issues:
+{{steps.implement.output}}</code></pre>
+
+    <h2 id="settings">Settings</h2>
+    <p>
+      <kbd>s</kbd> from the flow list opens Settings, where the validator LLM is
+      configured: provider (Anthropic, OpenAI, Google, or a custom OpenAI-compatible
+      endpoint), model, and API key — without leaving the app.
+    </p>
+    <figure>
+      <img src="assets/img/06-settings.png" alt="The Settings screen with a Validator LLM section (Provider: Anthropic, Model: claude-opus-4-8, API key not set) and a General section with a Notifications toggle and Save, Test, and Cancel buttons.">
+      <figcaption>Settings — validator provider, model, and API key, plus general preferences.</figcaption>
+    </figure>
+    <p>Configuration resolves in this order:</p>
+    <ol>
+      <li>Whatever is set on this screen, stored in <code>$FLOWS_HOME/config.json</code>.</li>
+      <li>An environment variable fallback for any field left blank (table below). With
+        nothing configured at all, the default is the Anthropic provider on
+        <code>claude-opus-4-8</code>.</li>
+    </ol>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>ANTHROPIC_API_KEY</code> / <code>ANTHROPIC_AUTH_TOKEN</code></td><td>—</td><td>API key fallback, Anthropic validator</td></tr>
+        <tr><td><code>OPENAI_API_KEY</code></td><td>—</td><td>API key fallback, OpenAI and custom (OpenAI-compatible) validator</td></tr>
+        <tr><td><code>GEMINI_API_KEY</code> / <code>GOOGLE_API_KEY</code></td><td>—</td><td>API key fallback, Google validator</td></tr>
+        <tr><td><code>FLOWS_VALIDATOR_MODEL</code></td><td><code>claude-opus-4-8</code></td><td>Model fallback, Anthropic validator</td></tr>
+        <tr><td><code>FLOWS_HOME</code></td><td><code>~/.flows</code></td><td>Where flow definitions, run history, and config live</td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout warn">
+      <strong>Security note:</strong> the API key entered in Settings is written to
+      <code>$FLOWS_HOME/config.json</code> in plain text, with file permissions restricted
+      to <code>0600</code> (owner read/write only). Leave the field blank in Settings to
+      rely on the environment variable instead of persisting a key to disk.
+    </div>
+
+    <h2 id="keyboard">Keyboard reference</h2>
+
+    <h3>Flow list</h3>
+    <div class="keycap-row">
+      <span class="kv"><kbd>⏎</kbd> run</span>
+      <span class="kv"><kbd>n</kbd> new</span>
+      <span class="kv"><kbd>e</kbd> edit</span>
+      <span class="kv"><kbd>h</kbd> history</span>
+      <span class="kv"><kbd>c</kbd> duplicate</span>
+      <span class="kv"><kbd>x</kbd> export</span>
+      <span class="kv"><kbd>i</kbd> import</span>
+      <span class="kv"><kbd>d</kbd> delete</span>
+      <span class="kv"><kbd>s</kbd> settings</span>
+      <span class="kv"><kbd>q</kbd> quit</span>
+    </div>
+
+    <h3>Flow editor</h3>
+    <p>Arrow keys move between fields; <kbd>⏎</kbd> edits a field or opens a section;
+    <kbd>esc</kbd> goes back. A flow's working directory supports
+    <code>{{params.&lt;name&gt;}}</code> and is used by every step that doesn't set its own.</p>
+
+    <h3>Run screen</h3>
+    <div class="keycap-row">
+      <span class="kv"><kbd>a</kbd> attach</span>
+      <span class="kv"><kbd>ctrl+]</kbd> detach</span>
+      <span class="kv"><kbd>f</kbd> continue without answering</span>
+      <span class="kv"><kbd>c</kbd> cancel</span>
+      <span class="kv"><kbd>PgUp</kbd>/<kbd>PgDn</kbd> scroll page</span>
+      <span class="kv"><kbd>shift+↑</kbd>/<kbd>shift+↓</kbd> scroll by step</span>
+      <span class="kv"><kbd>esc</kbd> leave (run keeps going)</span>
+    </div>
+
+    <h3>Run history</h3>
+    <div class="keycap-row">
+      <span class="kv"><kbd>⏎</kbd> open / re-attach</span>
+      <span class="kv"><kbd>r</kbd> re-run</span>
+    </div>
+
+    <h2 id="install">Install &amp; run</h2>
+    <p>Requires <a href="https://bun.sh">Bun</a> and at least one coding agent CLI on your <code>PATH</code>.</p>
+    <pre><code>bun install
+export ANTHROPIC_API_KEY=sk-ant-...   # needed for step validation (default provider)
+bun run start</code></pre>
+    <p>
+      If you see <code>Cannot find module 'react/jsx-dev-runtime'</code> (or
+      <code>Cannot find package 'react'</code>) referencing a
+      <code>.bun/install/cache/...</code> path, it means <code>node_modules</code> is
+      missing and Bun auto-installed <code>@opentui/react</code> into its global cache,
+      where the <code>react</code> peer can't be resolved. Run <code>bun install</code> in
+      the repo root, then <code>bun run start</code> again.
+    </p>
+
+    <h2 id="architecture">Under the hood</h2>
+    <p>
+      Flows is a single Bun/React process. The engine emits typed <code>RunEvent</code>s
+      (step-start, agent-output, validation-result, step-retry, flow-complete, …) that the
+      run screen renders live; the UI and core share only <code>src/types.ts</code>.
+    </p>
+    <pre class="arch-tree"><code>index.tsx            entry point (createCliRenderer + createRoot)
+src/types.ts         shared contract (Flow, FlowStep, RunEvent, ...)
+src/core/
+  storage.ts         JSON persistence in $FLOWS_HOME/flows
+  config.ts          validator LLM config persistence + resolution
+  agents.ts          agent registry + exec-mode command builders
+  session.ts         PTY-backed agent sessions (bun-pty)
+  interactive.ts     per-agent spawn + turn detection, scratch/hook files
+  template.ts        {{...}} interpolation
+  validator.ts       multi-provider validation + needsUserInput detection
+  engine.ts          sequential run loop, awaiting-input gate, retries
+  runManager.ts      in-memory registry of active runs, attach/cancel surface
+  runStore.ts        run history persistence in $FLOWS_HOME/runs
+src/ui/
+  App.tsx            screen router + global ctrl+c/attach gating
+  FlowList.tsx        RunScreen.tsx      SettingsScreen.tsx
+  FlowEditor.tsx      RunHistory.tsx     ConfirmDelete.tsx
+  StepEditor.tsx      RunDetail.tsx      RunParamsForm.tsx</code></pre>
+    <p>
+      Agents run inside a real PTY (via <code>bun-pty</code>), so they see a proper
+      terminal — colors, progress rendering, and TTY-gated behavior all work as they would
+      outside Flows. The generated per-agent hook files that make turn detection possible
+      live under <code>$FLOWS_HOME/tmp/&lt;runId&gt;/&lt;agent&gt;/</code> and are removed
+      when the run's sessions close.
+    </p>
+
+    <footer class="page-footer">
+      <p>This page documents the Flows terminal app in this repository. See the
+      <a href="https://github.com/allannapier/Flows">source</a> for the full README and
+      implementation.</p>
+    </footer>
+  </main>
+</div>
+</body>
+</html>
