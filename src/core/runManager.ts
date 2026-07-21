@@ -257,6 +257,11 @@ export function startRun(
           run.statusMessage = { text: `step ${e.stepIndex + 1} timed out after ${e.minutes}m`, kind: "warning" };
           run.feedLog.push(`\r\n\x1b[2m[timeout] step timed out after ${e.minutes}m\x1b[0m\r\n`);
           break;
+        case "param-directory-ready":
+          if (e.created) {
+            run.feedLog.push(`\r\n\x1b[2m[setup] created directory for "${e.paramName}": ${e.path}\x1b[0m\r\n`);
+          }
+          break;
         case "step-awaiting-input":
           run.status = "awaiting-input";
           run.statusMessage = { text: e.message, kind: "warning" };

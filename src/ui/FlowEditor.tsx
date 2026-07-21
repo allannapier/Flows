@@ -466,7 +466,7 @@ export function FlowEditor({
               {p.name}
               {p.required ? " *" : ""}
               {p.description ? ` — ${p.description}` : ""}
-              {p.choices?.length ? ` [${p.choices.join("/")}]` : ""}
+              {p.choices?.length ? ` [${p.choices.join("/")}]` : p.directoryPath ? " [directory]" : ""}
             </SimpleRow>
           ))}
           <SimpleRow selected={isRow("add-param")} fg={colors.success} hint={[{ keys: "⏎", label: "add" }]}>

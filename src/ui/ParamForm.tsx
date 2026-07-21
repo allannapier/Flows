@@ -5,11 +5,12 @@ import type { FlowParameter } from "../types";
 import { colors, Hint, FieldRow, TabToggleRow, ButtonRow, RowHint, marker, type KeyHintSpec } from "./theme";
 
 type FieldKind = "name" | "description" | "default" | "choices";
-type InputType = "text" | "choice";
+type InputType = "text" | "choice" | "directory";
 
 const INPUT_TYPE_OPTIONS: TabSelectOption[] = [
   { name: "Free text", description: "type any value at run time", value: "text" },
   { name: "Choices", description: "pick from a fixed list at run time", value: "choice" },
+  { name: "Directory path", description: "a folder; created automatically at run time if missing", value: "directory" },
 ];
 
 function parseChoices(text: string): string[] {
@@ -28,7 +29,9 @@ export function ParamForm({
   const [draft, setDraft] = useState<FlowParameter>(
     param ? { ...param } : { name: "", description: "", required: false, default: "" },
   );
-  const [inputType, setInputType] = useState<InputType>(param?.choices?.length ? "choice" : "text");
+  const [inputType, setInputType] = useState<InputType>(
+    param?.choices?.length ? "choice" : param?.directoryPath ? "directory" : "text",
+  );
   const [choicesText, setChoicesText] = useState<string>(param?.choices?.join(", ") ?? "");
   const [cursor, setCursor] = useState(0);
   const [editing, setEditing] = useState<FieldKind | null>(null);
@@ -77,7 +80,7 @@ export function ParamForm({
     const choices = inputType === "choice" ? parsedChoices : undefined;
     const finalDefault =
       inputType === "choice" ? (draft.default && choices!.includes(draft.default) ? draft.default : undefined) : draft.default;
-    onSave({ ...draft, name: draft.name.trim(), default: finalDefault, choices });
+    onSave({ ...draft, name: draft.name.trim(), default: finalDefault, choices, directoryPath: inputType === "directory" ? true : undefined });
   }
 
   function activate(row: (typeof rows)[number]) {
@@ -252,7 +255,7 @@ export function ParamForm({
             <box height={3}>
               <tab-select
                 ref={(node) => {
-                  if (node) node.setSelectedIndex(inputType === "choice" ? 1 : 0);
+                  if (node) node.setSelectedIndex(inputType === "choice" ? 1 : inputType === "directory" ? 2 : 0);
                 }}
                 focused
                 flexGrow={1}
@@ -279,7 +282,7 @@ export function ParamForm({
                 bg={isRow("inputType") ? colors.selectionBg : undefined}
               >
                 {"  "}
-                {inputType === "choice" ? "Choices" : "Free text"}
+                {inputType === "choice" ? "Choices" : inputType === "directory" ? "Directory path" : "Free text"}
               </text>
             </box>
           )}
@@ -349,7 +352,7 @@ export function ParamForm({
           </box>
         ) : (
           <FieldRow
-            label="Default value"
+            label={inputType === "directory" ? "Default value (a folder path, optional)" : "Default value"}
             selected={isRow("default")}
             editing={editing === "default"}
             fieldDraft={fieldDraft}

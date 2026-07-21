@@ -72,6 +72,8 @@ function progressLine(e: RunEvent, flow: Flow): string | undefined {
   switch (e.type) {
     case "flow-start":
       return `Running "${e.flowName}" (${e.totalSteps} step${e.totalSteps === 1 ? "" : "s"})`;
+    case "param-directory-ready":
+      return e.created ? `✓ created directory for "${e.paramName}": ${e.path}` : undefined;
     case "step-start":
       return e.attempt > 1 ? `${stepLabel(flow, e.stepIndex)} — retrying (attempt ${e.attempt})` : `${stepLabel(flow, e.stepIndex)} — started`;
     case "validation-result":

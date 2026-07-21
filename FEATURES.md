@@ -16,7 +16,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **8. Per-Step Timeout Watchdog**
 - [x] **9. Terminal Notifications for Background Runs**
 - [x] **10. Headless CLI Mode (run flows non-interactively)**
-- [ ] **11. Directory Path Parameter Type (auto-create on run)**
+- [x] **11. Directory Path Parameter Type (auto-create on run)**
 
 ---
 
@@ -351,7 +351,7 @@ Flows can only be run by a human inside the TUI. A headless mode — `bun run st
 
 ### 11. Directory Path Parameter Type (auto-create on run)
 
-**Status:** Not started
+**Status:** Complete
 
 **Goal:**  
 Today a parameter is either free text or a fixed `choices` list (`FlowParameter` in `src/types.ts`). When a flow's `workingDir` (or a step's) is templated from a parameter (feature 5) and the user points it at a folder that doesn't exist yet — e.g. a brand-new project directory — the step fails immediately with "Working directory not found", because `resolveStepWorkingDir` only validates, it never creates. Add a `directoryPath` parameter type so authors can mark a parameter as "this value is a folder", and have the engine create it (`mkdir -p` semantics) at run setup time, before any step runs, instead of failing.

@@ -173,7 +173,13 @@ export function RunParamsForm({
                   {p.name}
                   {p.required ? " *" : ""}
                   {p.description ? `  — ${p.description}` : ""}
-                  {p.choices?.length ? `  (${p.choices.join(" / ")})` : p.default ? `  (default: ${p.default})` : ""}
+                  {p.choices?.length
+                    ? `  (${p.choices.join(" / ")})`
+                    : p.directoryPath
+                      ? `  (directory — created automatically if missing)`
+                      : p.default
+                        ? `  (default: ${p.default})`
+                        : ""}
                 </text>
                 {focused && (
                   <RowHint
