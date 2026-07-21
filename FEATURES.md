@@ -16,6 +16,7 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **8. Per-Step Timeout Watchdog**
 - [x] **9. Terminal Notifications for Background Runs**
 - [x] **10. Headless CLI Mode (run flows non-interactively)**
+- [ ] **11. Directory Path Parameter Type (auto-create on run)**
 
 ---
 
@@ -345,3 +346,37 @@ Flows can only be run by a human inside the TUI. A headless mode — `bun run st
 - Awaiting-input pauses and failure alerts never hang a headless run — they auto-continue/auto-acknowledge, and the log says so.
 - The run appears in the TUI's run history afterwards, indistinguishable from an interactive run.
 - `--json` output is line-delimited JSON parseable by tools like `jq`; plain `bun run start` still launches the TUI unchanged.
+
+---
+
+### 11. Directory Path Parameter Type (auto-create on run)
+
+**Status:** Not started
+
+**Goal:**  
+Today a parameter is either free text or a fixed `choices` list (`FlowParameter` in `src/types.ts`). When a flow's `workingDir` (or a step's) is templated from a parameter (feature 5) and the user points it at a folder that doesn't exist yet — e.g. a brand-new project directory — the step fails immediately with "Working directory not found", because `resolveStepWorkingDir` only validates, it never creates. Add a `directoryPath` parameter type so authors can mark a parameter as "this value is a folder", and have the engine create it (`mkdir -p` semantics) at run setup time, before any step runs, instead of failing.
+
+**Where to implement:**
+
+- **`src/types.ts`** — Add `directoryPath?: boolean` to `FlowParameter`, documented as: when `true`, this parameter's value is a filesystem directory path; at run start the engine resolves it (expanding a leading `~`, resolving to an absolute path) and creates it recursively if it doesn't already exist, rather than requiring it to pre-exist. Mutually exclusive with `choices` in the UI (a directory can't also be a fixed-choice list), but no runtime code needs to enforce that beyond what the editor does.
+
+- **`src/core/engine.ts`** — Add a setup step at the top of `runFlow`, before the step loop begins (and before the first `"step-start"`/agent launch of any kind):
+  - For each `flow.parameters` entry with `directoryPath === true` and a non-empty value in `paramValues`: expand a leading `~` (reuse `expandHome`), resolve to an absolute path (`path.resolve`), and `fs.mkdirSync(resolved, { recursive: true })`.
+  - If the resolved path already exists but is not a directory (e.g. it's a regular file), fail the run immediately with a clear error naming the parameter and path — same "fail before launching anything" precedent as `resolveStepWorkingDir` in feature 5 — instead of throwing later from a half-started run.
+  - Write the resolved absolute path back into `paramValues[param.name]` so every `{{params.<name>}}` reference downstream (including `Flow.workingDir` / `FlowStep.workingDir`) sees the canonical, guaranteed-to-exist path.
+  - Emit a new `RunEvent`: `{ type: "param-directory-ready"; paramName: string; path: string; created: boolean }` for each directory parameter processed (`created: true` when it didn't exist before this call), so the run screen/CLI log can show what was set up.
+
+- **`src/ui/ParamForm.tsx`** — Extend the existing "Input type" tab-select (currently `Free text` / `Choices`) with a third option, `Directory path` (description: "a folder; created automatically at run time if missing"). When selected: hide the "Choices" field (same as `Free text` today), keep "Default value" as a free-text field (a default folder path, optional), and on save set `directoryPath: true` and `choices: undefined` on the saved `FlowParameter` (mirroring how `choices` is set/cleared today).
+
+- **`src/ui/RunParamsForm.tsx`** — For parameters with `directoryPath === true`, show a hint next to the field (similar to how `choices` are listed today), e.g. `(directory — created automatically if missing)`, so the user filling in the value knows a typo creates a new folder rather than erroring.
+
+- **`src/ui/RunScreen.tsx`** (and the CLI's event-to-log-line translation in `src/cli/run.ts`) — Render the new `"param-directory-ready"` event, e.g. `✓ created directory for "repoPath": /tmp/new-project` (only worth a line when `created` is true; silently skip/no-op when the directory already existed).
+
+- **`src/core/lint.ts`** — Add a warning: a parameter has both `choices` and `directoryPath` set (shouldn't happen via the editor, but guards hand-edited/imported JSON) — `directoryPath` is ignored in that case.
+
+**Acceptance criteria:**
+- A flow parameter marked "Directory path" whose supplied value is a path that doesn't exist on disk is created (including any missing intermediate directories) before the flow's first step starts; the flow no longer fails with "Working directory not found" for that value.
+- If the supplied path already exists as a directory, nothing changes on disk and the run proceeds exactly as before.
+- If the supplied path exists but is a file (not a directory), the run fails immediately with a clear error naming the parameter and path, before any agent is launched.
+- Using `{{params.<name>}}` (from a directory-path parameter) as a flow- or step-level `workingDir` always resolves to an existing directory by the time the step runs.
+- Existing parameters (no `directoryPath` set) behave exactly as today, in both the TUI and headless CLI paths.
