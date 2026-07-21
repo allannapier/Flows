@@ -440,11 +440,16 @@ export function Button({
   label,
   selected,
   color,
+  onMouseDown,
 }: {
   label: string;
   selected: boolean;
   /** Override the accent color (e.g. colors.error for a destructive action). */
   color?: string;
+  /** Lets a button be clicked directly, independent of keyboard focus — for
+   * spots (like an attached PTY view) where keystrokes are forwarded
+   * elsewhere and can't double as a shortcut. */
+  onMouseDown?: () => void;
 }) {
   const c = color ?? colors.accent;
   return (
@@ -455,6 +460,7 @@ export function Button({
       backgroundColor={selected ? c : undefined}
       paddingLeft={2}
       paddingRight={2}
+      onMouseDown={onMouseDown}
     >
       <text fg={selected ? colors.bg : c}>{label}</text>
     </box>

@@ -397,6 +397,15 @@ export function RunScreen({
           borderColor={terminalBorderColor}
           title={terminalTitle}
         >
+          {attachedUi && (
+            // A keyboard shortcut can't double as a button here — every key
+            // is forwarded straight to the agent PTY while attached (see the
+            // useKeyboard handler above), so a mouse click is the only way
+            // to offer a non-ctrl+] way to detach.
+            <box flexDirection="row" justifyContent="flex-end" paddingRight={1}>
+              <Button label="Detach" selected={false} onMouseDown={detach} />
+            </box>
+          )}
           <scrollbox ref={scrollBoxRef} flexGrow={1} stickyScroll stickyStart="bottom" scrollX={false}>
             <ghostty-terminal persistent showCursor ref={termRef} cols={termCols} rows={termRows} />
           </scrollbox>
