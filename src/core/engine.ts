@@ -331,6 +331,38 @@ export function runFlow(
       }
     }
 
+    // Directory-path parameters: resolve to an absolute path and create the
+    // directory (recursively) if it doesn't exist yet, before any step
+    // starts — so a flow whose workingDir is templated from one of these
+    // never fails with "Working directory not found" for a brand-new path.
+    // The canonical resolved path is written back into `params` so every
+    // downstream {{params.<name>}} reference (including workingDir) sees it.
+    for (const p of flow.parameters) {
+      if (!p.directoryPath || p.choices?.length) continue;
+      const value = params[p.name];
+      if (!value) continue;
+
+      const resolved = path.resolve(expandHome(value));
+      let existed = true;
+      try {
+        const stat = fs.statSync(resolved);
+        if (!stat.isDirectory()) {
+          onEvent({
+            type: "flow-failed",
+            error: `Parameter "${p.name}" points at an existing file, not a directory: ${resolved}`,
+          });
+          return;
+        }
+      } catch {
+        existed = false;
+      }
+      if (!existed) {
+        fs.mkdirSync(resolved, { recursive: true });
+      }
+      params[p.name] = resolved;
+      onEvent({ type: "param-directory-ready", paramName: p.name, path: resolved, created: !existed });
+    }
+
     const stepOutputs: Record<string, string> = {};
     // Tracks which (agent, resolved cwd) pairs have already run at least one
     // attempt in this run, so the first step for a given pair always starts

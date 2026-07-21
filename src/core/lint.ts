@@ -124,6 +124,12 @@ export function lintFlow(flow: Flow): FlowLintIssue[] {
     if (p.choices?.length && p.default !== undefined && p.default !== "" && !p.choices.includes(p.default)) {
       issues.push({ severity: "warning", message: `Parameter "${p.name}" has a default ("${p.default}") that isn't one of its choices` });
     }
+    if (p.choices?.length && p.directoryPath) {
+      issues.push({
+        severity: "warning",
+        message: `Parameter "${p.name}" has both "choices" and "directoryPath" set — directoryPath is ignored`,
+      });
+    }
   }
 
   return issues;

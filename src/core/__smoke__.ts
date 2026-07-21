@@ -288,7 +288,10 @@ function testLintFlow(): void {
     id: newFlowId(),
     name: "Clean Flow",
     description: "",
-    parameters: [{ name: "repo", description: "", required: true, default: "a", choices: ["a", "b"] }],
+    parameters: [
+      { name: "repo", description: "", required: true, default: "a", choices: ["a", "b"] },
+      { name: "outDir", description: "", required: false, directoryPath: true },
+    ],
     steps: [
       makeLintStep({ name: "first", prompt: "clone {{params.repo}}" }),
       makeLintStep({ name: "second", prompt: "review {{steps.first.output}}", routing: { onSuccess: 0, onFailure: undefined } }),
@@ -302,7 +305,10 @@ function testLintFlow(): void {
     id: newFlowId(),
     name: "Broken Flow",
     description: "",
-    parameters: [{ name: "repo", description: "", required: true, default: "z", choices: ["a", "b"] }],
+    parameters: [
+      { name: "repo", description: "", required: true, default: "z", choices: ["a", "b"] },
+      { name: "outDir", description: "", required: false, choices: ["a"], directoryPath: true },
+    ],
     steps: [
       makeLintStep({ name: "dup", prompt: "uses {{params.missingParam}}" }),
       makeLintStep({ name: "dup", prompt: "refs {{steps.nonexistent.output}}", routing: { onSuccess: 99 } }),
@@ -327,6 +333,10 @@ function testLintFlow(): void {
   assert.ok(warnings.some((m) => m.includes('named "dup"')), "should warn on duplicate step names");
   assert.ok(warnings.some((m) => m.includes("runs at or after this step")), "should warn on a self/forward step reference");
   assert.ok(warnings.some((m) => m.includes("isn't one of its choices")), "should warn on default not in choices");
+  assert.ok(
+    warnings.some((m) => m.includes('"outDir"') && m.includes("directoryPath is ignored")),
+    "should warn when a parameter has both choices and directoryPath",
+  );
 
   console.log("lintFlow: OK");
 }
@@ -825,6 +835,91 @@ async function testEngineWorkingDir(): Promise<void> {
     );
 
     console.log("engine workingDir (flow-level, override, missing dir, steps.* rejection): OK");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testEngineDirectoryPathParam(): Promise<void> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "flows-dirparam-"));
+  try {
+    const makeFlow = (): Flow => ({
+      id: newFlowId(),
+      name: "Directory Path Param Flow",
+      description: "",
+      parameters: [{ name: "projectDir", description: "target dir", required: true, directoryPath: true }],
+      workingDir: "{{params.projectDir}}",
+      steps: [
+        {
+          id: "step-1",
+          name: "pwd",
+          agent: "custom",
+          customCommand: "pwd",
+          prompt: "unused",
+          expectedResult: "N/A",
+          validate: false,
+          maxRetries: 0,
+        },
+      ],
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    // 1. A path that doesn't exist yet is created (including intermediate
+    //    dirs) before the first step starts, and the step runs in it.
+    const missingDir = path.join(tmpDir, "brand-new", "nested");
+    const flow = makeFlow();
+    const events: RunEvent[] = [];
+    const handle = runFlow(flow, { projectDir: missingDir }, (e) => events.push(e));
+    await handle.done;
+
+    assert.ok(
+      !events.some((e) => e.type === "flow-failed"),
+      `unexpected flow-failed, got: ${JSON.stringify(events.filter((e) => e.type === "flow-failed"))}`,
+    );
+    assert.ok(fs.statSync(missingDir).isDirectory(), "expected the missing directory to have been created");
+    const readyEvent = events.find((e) => e.type === "param-directory-ready");
+    assert.ok(readyEvent && readyEvent.type === "param-directory-ready" && readyEvent.created, "expected a created param-directory-ready event");
+    const readyIdx = events.indexOf(readyEvent!);
+    const firstStepStart = events.findIndex((e) => e.type === "step-start");
+    assert.ok(readyIdx < firstStepStart, "param-directory-ready must fire before the first step-start");
+    const stepComplete = events.find((e) => e.type === "step-complete");
+    assert.ok(stepComplete && stepComplete.type === "step-complete");
+    if (stepComplete && stepComplete.type === "step-complete") {
+      assert.ok(
+        stepComplete.output.includes(fs.realpathSync(missingDir)),
+        `expected step to run in the created directory, got: ${JSON.stringify(stepComplete.output)}`,
+      );
+    }
+
+    // 2. A path that already exists as a directory is left untouched
+    //    (created: false) and the run proceeds normally.
+    const existingDir = fs.mkdtempSync(path.join(tmpDir, "existing-"));
+    const existingEvents: RunEvent[] = [];
+    const existingHandle = runFlow(makeFlow(), { projectDir: existingDir }, (e) => existingEvents.push(e));
+    await existingHandle.done;
+    const existingReady = existingEvents.find((e) => e.type === "param-directory-ready");
+    assert.ok(
+      existingReady && existingReady.type === "param-directory-ready" && !existingReady.created,
+      "expected created: false for a pre-existing directory",
+    );
+    assert.ok(!existingEvents.some((e) => e.type === "flow-failed"));
+
+    // 3. A path that exists as a regular file fails the run immediately,
+    //    before any step starts.
+    const filePath = path.join(tmpDir, "im-a-file");
+    fs.writeFileSync(filePath, "not a directory");
+    const fileEvents: RunEvent[] = [];
+    const fileHandle = runFlow(makeFlow(), { projectDir: filePath }, (e) => fileEvents.push(e));
+    await fileHandle.done;
+    assert.ok(!fileEvents.some((e) => e.type === "step-start"), "step-start should never fire when the path is a file");
+    const fileFailed = fileEvents.find((e) => e.type === "flow-failed");
+    assert.ok(
+      fileFailed && fileFailed.type === "flow-failed" && fileFailed.error.includes("projectDir") && fileFailed.error.includes(filePath),
+      `expected flow-failed naming the parameter and path, got: ${JSON.stringify(fileFailed)}`,
+    );
+
+    console.log("engine directoryPath parameter (create missing, leave existing, reject file): OK");
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -1463,6 +1558,7 @@ async function main(): Promise<void> {
   await testEngineAlertOnFailure();
   await testEngineStepTimeout();
   await testEngineWorkingDir();
+  await testEngineDirectoryPathParam();
   testConfig();
   testResolveValidator();
   testNotify();

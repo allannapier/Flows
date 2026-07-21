@@ -22,6 +22,16 @@ export interface FlowParameter {
    * supplying values to run it. Absent/empty means free text.
    */
   choices?: string[];
+  /**
+   * When true, this parameter's value is a filesystem directory path. At run
+   * start the engine resolves it (expanding a leading "~", resolving to an
+   * absolute path) and creates it recursively if it doesn't already exist,
+   * rather than requiring it to pre-exist — so a flow whose working
+   * directory is templated from this parameter never fails with "Working
+   * directory not found" for a brand-new folder. Mutually exclusive with
+   * `choices` in the editor (not enforced at runtime beyond the editor).
+   */
+  directoryPath?: boolean;
 }
 
 export interface StepRouting {
@@ -166,6 +176,10 @@ export interface StepStats {
 
 export type RunEvent =
   | { type: "flow-start"; flowName: string; totalSteps: number }
+  /** A `directoryPath` parameter was resolved (and created, if missing)
+   * during the engine's run-setup pass, before any step starts. `created`
+   * is true only when the directory did not already exist. */
+  | { type: "param-directory-ready"; paramName: string; path: string; created: boolean }
   | { type: "step-start"; stepIndex: number; stepName: string; agent: AgentId; attempt: number }
   | { type: "agent-output"; stepIndex: number; chunk: string }
   | { type: "step-output-complete"; stepIndex: number; exitCode: number }
