@@ -17,6 +17,8 @@ Check off each feature as it is implemented. See `CLAUDE.md` for instructions on
 - [x] **9. Terminal Notifications for Background Runs**
 - [x] **10. Headless CLI Mode (run flows non-interactively)**
 - [x] **11. Directory Path Parameter Type (auto-create on run)**
+- [ ] **12. Ad-Hoc Agent Sandbox — Freeform Interactive Session**
+- [ ] **13. Save Sandbox Session as a Flow (AI Step Segmentation)**
 
 ---
 
@@ -380,3 +382,93 @@ Today a parameter is either free text or a fixed `choices` list (`FlowParameter`
 - If the supplied path exists but is a file (not a directory), the run fails immediately with a clear error naming the parameter and path, before any agent is launched.
 - Using `{{params.<name>}}` (from a directory-path parameter) as a flow- or step-level `workingDir` always resolves to an existing directory by the time the step runs.
 - Existing parameters (no `directoryPath` set) behave exactly as today, in both the TUI and headless CLI paths.
+
+---
+
+### 12. Ad-Hoc Agent Sandbox — Freeform Interactive Session
+
+**Status:** Not started
+
+**Goal:**
+Today the only way to drive a coding agent through Flows is to first author a `Flow` with one or more `FlowStep`s. Sometimes a user just wants to open a conversation with an agent against a working directory and iterate freely — try a prompt, see what it does, follow up, course-correct — before they know what the reusable steps even are. Add a "sandbox" mode: pick an agent and a working directory, chat with it turn by turn in the TUI, with no prompt template, no `expectedResult`, no validation and no retries. This session's transcript is the raw material feature 13 turns into a Flow.
+
+**Where to implement:**
+
+- **`src/types.ts`** — Add:
+
+  ```ts
+  export interface SandboxTurn {
+    role: "user" | "agent";
+    text: string;
+    at: string; // ISO timestamp
+  }
+
+  export interface SandboxSession {
+    id: string;
+    agent: AgentId;
+    workingDir: string;
+    turns: SandboxTurn[];
+    startedAt: string;
+    updatedAt: string;
+    /** True once the underlying process has exited (crash, `/exit`, or an
+     * explicit close) — no more turns can be sent, but the transcript is
+     * still readable and can still be turned into a Flow (feature 13). */
+    ended: boolean;
+  }
+  ```
+
+  Only agents where `agentSupportsInteractive(agent)` is true (`claude`, `opencode`, `codex`, `gemini` — see `src/core/interactive.ts`) are eligible; `custom` has no interactive contract, same restriction the engine already applies to `continueSession`/`pauseForReview`.
+
+- **`src/core/sandbox.ts`** (new file) — Mirrors the shape of `src/core/runManager.ts` but for sessions that aren't tied to a `Flow`/`RunRecord`:
+  - `sandboxDir()` — `${FLOWS_HOME}/sandbox`, following the same `FLOWS_HOME`-rooted convention as `storage.ts`'s `flowsDir()` and `interactive.ts`'s scratch dirs.
+  - `startSandbox(agent: AgentId, workingDir: string, openingPrompt: string, opts: { cols: number; rows: number }): SandboxHandle` — generates a fresh id, calls `prepareAgentScratch(id, agent)` and `createInteractiveSession(agent, { prompt: openingPrompt, cwd: workingDir, ...opts, scratch, onData })` exactly as `engine.ts` does for an interactive step, records the opening prompt as the first `"user"` turn, and awaits the reply via `awaitTurn`/`checkPendingTurn` to append the `"agent"` turn once the hook/quiescence signal fires.
+  - `SandboxHandle` exposes: `send(text: string): Promise<void>` (records a `"user"` turn, calls the underlying session's `sendTurn`, then awaits and records the `"agent"` reply turn), `resize`/`write` (passthrough to the underlying `AgentSession`, for raw attach same as `RunHandle`), `cancel()` (kills the session, marks `ended: true`), and a `subscribe(listener)` pattern matching `runManager.ts`'s `subscribeRun`.
+  - Persist the `SandboxSession` record to `sandboxDir()/<id>.json` after every turn (so a crash or restart doesn't lose the transcript — same durability guarantee `RunRecord`s already get from `runStore.ts`).
+  - `listSandboxSessions(): SandboxSession[]` and `getSandboxSession(id): SandboxSession | undefined` for the UI to list/resume.
+
+- **`src/ui/SandboxScreen.tsx`** (new file):
+  - When opened with no existing session: a small form — agent picker (reuse `AGENTS` filtered to `agentSupportsInteractive`, same "unavailable binary" greying-out `agentAvailable` already does elsewhere), a working-directory text field (default `process.cwd()`, supports `~` expansion like `resolveStepWorkingDir`), and an opening-prompt text field. Submitting calls `startSandbox`.
+  - Once live: render the agent's PTY output using the same renderer `RunScreen.tsx` already uses (`cleanOutput` / `ptyToText`), with the same attach model — `f` to attach (raw keystrokes forwarded via `handle.write`, `attach-state.ts`'s `setAttached(true)`, same as `RunScreen`), `esc` to detach back to the list while the session keeps running in the background.
+  - A dedicated single-line prompt input (separate from raw attach) is always available while a turn isn't in flight: typing text and pressing Enter calls `handle.send(text)` — this is the primary way to have a turn-by-turn conversation without fighting the agent CLI's own input box, mirroring how `engine.ts` already drives retries via `sendTurn` rather than raw keystrokes.
+  - A visible list of past turns (role + truncated text) above the live pane, so the user can scroll back through the conversation so far.
+
+- **`src/ui/FlowList.tsx`** — Add a new key binding, e.g. `a` "agent session", listed in the bottom hints alongside `n` (new flow); it navigates to a new list of sandbox sessions (existing + "start new"), analogous to how `x`/`i` open `FilePrompt`.
+
+- **`src/ui/App.tsx`** — Extend `Screen` with `{ name: "sandbox"; sandboxId?: string }` (absent = show the start form; present = resume/attach to that session) and a `{ name: "sandbox-list" }` entry point from `FlowList`.
+
+**Acceptance criteria:**
+- A user can pick an available interactive agent, a working directory, and an opening prompt, and get a live back-and-forth conversation with that agent inside the TUI, with no flow or steps defined anywhere.
+- Sending a follow-up turn while the agent is still working on the previous one is disabled/queued rather than corrupting the session.
+- Detaching (`esc`) leaves the agent process and conversation running; returning to the sandbox list and reselecting the session reattaches to the same live conversation.
+- The full transcript (ordered user/agent turns, agent id, working directory) survives an app restart via the persisted `SandboxSession` file.
+- Ending the session (agent process exits, or the user explicitly closes it) marks it `ended` but keeps the transcript readable/exportable.
+
+---
+
+### 13. Save Sandbox Session as a Flow (AI Step Segmentation)
+
+**Status:** Not started
+
+**Goal:**
+Once a sandbox session (feature 12) has gone well, the user shouldn't have to manually re-derive `FlowStep`s from memory. Add a "Save as Flow" action that hands the whole transcript — agent, working directory, and every user/agent turn — to an LLM that has been taught the full `Flow`/`FlowStep` contract, and gets back a segmented, ready-to-review draft flow: one step per coherent instruction, each with a real `prompt` and an `expectedResult` written in the same actionable style the existing step validator (`src/core/validator.ts`) already expects. The draft opens in the existing flow editor for review — nothing is written to `$FLOWS_HOME/flows` until the user explicitly saves it there.
+
+**Where to implement:**
+
+- **`src/core/flowFromTranscript.ts`** (new file):
+  - `renderTranscriptForLlm(session: SandboxSession): string` — flattens `session.turns` into the same `---`-turn-separated format `validator.ts`'s `SYSTEM_PROMPT` already tells the validator LLM to expect ("The output may be a multi-turn transcript with turns separated by `---` lines"), so a segmentation prompt and a later validation prompt read consistently.
+  - A system prompt that fully specifies the contract the LLM must produce against — explicitly documenting, in plain language, the parts of `FlowStep` (`src/types.ts`) relevant to authoring: `prompt` supports `{{params.<name>}}` and `{{steps.<stepName>.output}}` placeholders; `expectedResult` is judged later by a separate strict QA validator, so it must be specific and checkable, not a restatement of the prompt; steps in one sandbox conversation all share one live agent conversation, so every step after the first should be marked `continueSession: true`; one step should correspond to one coherent user instruction — merge trivial clarifying back-and-forth into the step it belongs to rather than emitting a step per literal turn.
+  - `segmentTranscriptIntoFlow(session: SandboxSession, configOverride?: AppConfig): Promise<{ name: string; description: string; steps: Array<{ name: string; prompt: string; expectedResult: string }> }>` — dispatches to whichever provider `resolveValidator` (`src/core/config.ts`) resolves to, reusing the same three-provider call shapes `validator.ts` already has (Anthropic/OpenAI/Google, each with a JSON schema response) but with a schema for `{ name, description, steps: [...] }` instead of `VERDICT_SCHEMA`. This is a distinct call from `validateOutput` (authoring assistance, not a pass/fail judgment) but shares the provider dispatch pattern.
+  - `draftFlowFromSandbox(session: SandboxSession, segmented): Flow` — assembles a full, not-yet-persisted `Flow`: fresh `id` (`newFlowId()`), `name`/`description` from the LLM, `parameters: []`, `workingDir: session.workingDir`, and `steps` built from the segmented list with `agent: session.agent`, `validate: true`, `maxRetries: 1`, `continueSession: i > 0`, and fresh step ids. Does not call `saveFlow`.
+
+- **`src/ui/SandboxScreen.tsx`** — Add a key binding (e.g. `s`, "save as flow"), enabled only once the session has at least one completed turn. Shows a brief in-progress indicator while `segmentTranscriptIntoFlow` runs, then hands the draft to `App.tsx`. On failure (network/auth error, malformed LLM JSON), show a readable error on the sandbox screen and leave the live session untouched — the user can retry without losing the conversation.
+
+- **`src/ui/FlowEditor.tsx`** — Add an optional `initialFlow?: Flow` prop, for a draft that hasn't been saved yet (distinct from the existing `flowId`-driven load path via `getFlow`). When present, populate the form from it directly. Saving persists it via `saveFlow` the same way a brand-new flow is saved today (the draft already carries a fresh id from `draftFlowFromSandbox`); cancelling discards the draft — it was never written to storage. Run the existing `lintFlow` (feature 7) on the draft before it's shown, surfacing any segmentation mistakes (e.g. a hallucinated `{{steps.X.output}}` reference) as ordinary editor warnings/errors.
+
+- **`src/ui/App.tsx`** — Extend the `"edit"` screen variant with an optional `initialFlow?: Flow`, and thread an `onSaveAsFlow(flow: Flow)` callback into `SandboxScreen` that navigates to `{ name: "edit", initialFlow: flow }`.
+
+**Acceptance criteria:**
+- From a sandbox session with at least one completed turn, "Save as Flow" opens the flow editor with a draft flow: one step per coherent instruction in the conversation, each step's `agent` and `workingDir` matching the session, and `continueSession: true` on every step after the first.
+- The draft is never written to `$FLOWS_HOME/flows/` until the user explicitly saves it from the editor; cancelling discards it entirely, and the sandbox session itself is unaffected either way.
+- Generated `expectedResult` text is specific enough for the existing validator to judge future runs against — not a generic restatement of the prompt.
+- A segmentation call that fails (provider error, bad JSON) shows a readable error on the sandbox screen and leaves the transcript/live process untouched; the user can retry.
+- A sandbox session with zero completed turns cannot be saved as a flow — the action is disabled with a hint why.
